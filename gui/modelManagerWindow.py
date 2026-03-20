@@ -74,7 +74,7 @@ class ModelManagerWindow(QWidget, Ui_models_manager_window):
 
             # ТРАНЗАКЦИЯ
 
-            model_id = self.dbworker.add_model(new_path)
+            model_id = self.dbworker.add_model(new_path.split("\\")[-1])
 
             classes = self._extract_classes(new_path)
 
