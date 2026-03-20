@@ -6,10 +6,10 @@ from temp.mainconfigwindow_ui import Ui_main_config_window
 from cameraManagerWindow import CameraManagerWindow
 from redactConfigWindow import RedactConfigWindow
 from modelManagerWindow import ModelManagerWindow
-# from videoWall import VideoWallExec
+from videoWall import VideoWallExec
 from tables.mytable import MyTable
 
-from db_worker2 import DBWorker
+from gui.db_worker import DBWorker
 
 class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def __init__(self):

@@ -5,13 +5,12 @@ import multiprocessing
 import torch
 import json
 
-from cameraCapture import CameraCapture
-from preprocess import PreprocessWorker
-from inferenceWorker import InferenceWorker
-from postprocess import PostProcessWorker
-from render import VideoWall
-from PySide6.QtWidgets import QApplication
-from dblogger import DBLogger
+from pipeline.cameraCapture import CameraCapture
+from pipeline.preprocess import PreprocessWorker
+from pipeline.inferenceWorker import InferenceWorker
+from pipeline.postprocess import PostProcessWorker
+from pipeline.render import VideoWall
+from pipeline.dblogger import DBLogger
 
 # Получить кадр с камеры
 # Передать кадры на инференс
@@ -38,24 +37,21 @@ class VideoWallExec:
         
         # cameras = [{"id":..., "ip":..., ...}]
         self.cam_ids = [camera["id"] for camera in cameras]
-
+        self.cam_workers = {}
     def start_videowall(self):
         print("STARTING THE VIDEOWALL...")
         cameras = self.cameras
         
         models = self.models
-        cam_workers = {}
-        camera_paths = []
-        cam_ids = []
-        for cam in self.cameras:
-            cam_id, cam_name, location, username, pwd, ip = cam
-            cam_ids.append(cam_id)
-            camera_paths.append(self.form_rtsp_link(username, pwd, ip)) 
         
+        
+            
         
         frames_queue = multiprocessing.Queue(maxsize=64)
-        for camera in cameras:
-            cc = CameraCapture(camera, frames_queue, camera["id"])
+        for camera in self.cameras:
+            path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
+            cc = CameraCapture(path, frames_queue, camera["id"])
+            self.cam_workers[camera["id"]] = cc
 
         tensor_queue = multiprocessing.Queue(maxsize=64)
         prepw = PreprocessWorker(frames_queue, tensor_queue, self.BATCH_SIZE)
@@ -75,7 +71,7 @@ class VideoWallExec:
         
         self.wall.show()
         
-        for cc in cam_workers.values():
+        for cc in self.cam_workers.values():
             cc.start()
 
         prepw.start()
@@ -86,7 +82,7 @@ class VideoWallExec:
         
         def stop_threads():
             print("Stopping the videowall...")
-            for cc in cam_workers.values():
+            for cc in self.cam_workers.values():
                 cc.stop()
                 cc.join()
                 if cc.is_alive():
@@ -110,9 +106,9 @@ class VideoWallExec:
             print("Videowall stopped")
         self.wall.destroyed.connect(stop_threads)
         
-    def form_rtsp_link(self, camera_info):
-        for camera in camera_info:
-            link = f"rtsp://{camera["ip"]}"
+    def form_rtsp_link(self, username, pwd, ip):
+        link = f'rtsp://{username}:{pwd}@{ip}:554/Streaming/101'
+        return link
 
 
 if __name__ == "__main__":
