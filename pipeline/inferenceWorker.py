@@ -78,8 +78,11 @@ class InferenceWorker(torch.multiprocessing.Process):
     def load_models(self, models):
         ms = []
         mcls = {}
+        print(models)
         for i, model in enumerate(models):
-            m, classes = self.load_yolo(model)
+            _, mp = model
+            mp = mp.replace("\\", "/")
+            m, classes = self.load_yolo(mp)
             ms.append(m)
             mcls[i] = classes
         return ms, mcls
