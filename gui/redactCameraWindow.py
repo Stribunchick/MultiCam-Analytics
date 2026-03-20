@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Slot, Signal
 
-from temp.redactcamerawindow_ui import Ui_camera_redact_window
+from ui_build.redactcamerawindow_ui import Ui_camera_redact_window
 
 class CameraRedactWindow(QWidget, Ui_camera_redact_window):
 

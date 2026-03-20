@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QListWidgetItem, QWidget
 from PySide6.QtCore import Qt, Slot, Signal
 
-from temp.redactconfigwindow_ui import Ui_redact_config_window
+from ui_build.redactconfigwindow_ui import Ui_redact_config_window
 
 class RedactConfigWindow(QWidget, Ui_redact_config_window):
     config_changed =  Signal()

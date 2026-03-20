@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QHeaderView, QMainWindow, QMessageBox, QVBoxLayout, QTableWidgetItem
 from PySide6.QtCore import Slot
 
-from temp.mainconfigwindow_ui import Ui_main_config_window
+from ui_build.mainconfigwindow_ui import Ui_main_config_window
 
 from gui.cameraManagerWindow import CameraManagerWindow
 from gui.redactConfigWindow import RedactConfigWindow

@@ -72,14 +72,14 @@
            </spacer>
           </item>
           <item>
-           <widget class="QToolButton" name="transfer_selected_classes_right">
+           <widget class="QToolButton" name="transfer_selected_classes_left">
             <property name="text">
              <string>&lt;</string>
             </property>
            </widget>
           </item>
           <item>
-           <widget class="QToolButton" name="transfer_selected_classes_left">
+           <widget class="QToolButton" name="transfer_selected_classes_right">
             <property name="text">
              <string>&gt;</string>
             </property>

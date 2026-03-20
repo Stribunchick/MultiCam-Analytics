@@ -5,7 +5,7 @@ import shutil
 
 from ultralytics import YOLO
 
-from temp.modelmanagerwindow_ui import Ui_models_manager_window
+from ui_build.modelmanagerwindow_ui import Ui_models_manager_window
 from tables.mytable import MyTable
 
 class ModelManagerWindow(QWidget, Ui_models_manager_window):
@@ -37,7 +37,7 @@ class ModelManagerWindow(QWidget, Ui_models_manager_window):
         table = self.models_table.table
 
         table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["ID", "Path"])
+        table.setHorizontalHeaderLabels(["ID", "Путь к модели"])
         table.setRowCount(len(models))
 
         header = table.horizontalHeader()

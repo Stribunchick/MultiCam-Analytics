@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QHeaderView, QMessageBox, QTableWidgetItem, QVBoxLayout, QWidget
 from PySide6.QtCore import Slot, Signal
-from temp.cameramanagerwindow_ui import Ui_camera_manager_window
+from ui_build.cameramanagerwindow_ui import Ui_camera_manager_window
 from gui.redactCameraWindow import CameraRedactWindow
 
 from tables.mytable import MyTable

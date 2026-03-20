@@ -64,15 +64,15 @@ class Ui_redact_config_window(object):
 
         self.verticalLayout_2.addItem(self.verticalSpacer_2)
 
-        self.transfer_selected_classes_right = QToolButton(self.groupBox_4)
-        self.transfer_selected_classes_right.setObjectName(u"transfer_selected_classes_right")
-
-        self.verticalLayout_2.addWidget(self.transfer_selected_classes_right)
-
         self.transfer_selected_classes_left = QToolButton(self.groupBox_4)
         self.transfer_selected_classes_left.setObjectName(u"transfer_selected_classes_left")
 
         self.verticalLayout_2.addWidget(self.transfer_selected_classes_left)
+
+        self.transfer_selected_classes_right = QToolButton(self.groupBox_4)
+        self.transfer_selected_classes_right.setObjectName(u"transfer_selected_classes_right")
+
+        self.verticalLayout_2.addWidget(self.transfer_selected_classes_right)
 
         self.verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
@@ -224,8 +224,8 @@ class Ui_redact_config_window(object):
         self.ok_button.setText(QCoreApplication.translate("redact_config_window", u"\u041e\u043a", None))
         self.cancel_button.setText(QCoreApplication.translate("redact_config_window", u"\u041e\u0442\u043c\u0435\u043d\u0430", None))
         self.groupBox_4.setTitle(QCoreApplication.translate("redact_config_window", u"\u041e\u043f\u0440\u0435\u0434\u0435\u043b\u044f\u0435\u043c\u044b\u0435 \u043a\u043b\u0430\u0441\u0441\u044b", None))
-        self.transfer_selected_classes_right.setText(QCoreApplication.translate("redact_config_window", u"<", None))
-        self.transfer_selected_classes_left.setText(QCoreApplication.translate("redact_config_window", u">", None))
+        self.transfer_selected_classes_left.setText(QCoreApplication.translate("redact_config_window", u"<", None))
+        self.transfer_selected_classes_right.setText(QCoreApplication.translate("redact_config_window", u">", None))
         self.groupBox_3.setTitle(QCoreApplication.translate("redact_config_window", u"\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u043c\u044b\u0435 \u043a\u0430\u043c\u0435\u0440\u044b", None))
         self.transfer_selected_cameras_right.setText(QCoreApplication.translate("redact_config_window", u"<", None))
         self.transfer_selected_cameras_left.setText(QCoreApplication.translate("redact_config_window", u">", None))
