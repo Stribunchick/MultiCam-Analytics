@@ -71,3 +71,8 @@ class VideoWall(QWidget):
             ch * w,
             QImage.Format.Format_RGB888,
         )
+    
+    def closeEvent(self, event):
+        print("Window closing")
+        self.destroyed.emit()
+        event.accept()

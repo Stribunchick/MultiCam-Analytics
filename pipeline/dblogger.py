@@ -27,14 +27,12 @@ CREATE TABLE IF NOT EXISTS logs(
         conn.commit()
         conn.close()
 
-    def start_action(self, cam_id, dtStart, etype, src):
+    def start_action(self, log_id, cam_id, dtStart, etype, src):
         # Один INSERT с выборкой location из cameras
         self.cursor.execute("""
-            INSERT INTO logs(cam_id, location, datetimeStart, event_type, src)
-            SELECT ?, location, ?, ?, ?
-            FROM cameras
-            WHERE id = ?
-        """, (cam_id, dtStart, etype, src, cam_id))
+            INSERT INTO logs(id, cam_id, datetimeStart, event_type, src)
+            VALUES (?, ?, ?, ?, ?)
+        """, (log_id, cam_id, dtStart, etype, src))
         
 
     def stop_action(self, log_id, dtStop):
@@ -61,13 +59,14 @@ CREATE TABLE IF NOT EXISTS logs(
             except Empty:
                 continue
 
-            action = task.get_nowait("action")
+            action = task["action"]
             if action == "start":
+                log_id = task["id"]
                 cam_id = task["cam_id"]
                 dtStart = task["datetimeStart"]
                 etype = task["event_type"]
                 src = task["src"]
-                self.start_action(cam_id, dtStart, etype, src)
+                self.start_action(log_id, cam_id, dtStart, etype, src)
             elif action == "end":
                 log_id = task["log_id"]
                 dtStop = task["datetimeStop"]

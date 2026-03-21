@@ -24,7 +24,7 @@ class PostProcessWorker(multiprocessing.Process):
         
         self.active_tracks = {cam_id: {} for cam_id in cam_ids}
         if len(allowed_classes) != 0:
-            self.allowed_classes = allowed_classes
+            self.allowed_classes = [x for _, x, _ in allowed_classes]
         else:
             self.allowed_classes = None
 
@@ -74,10 +74,8 @@ class PostProcessWorker(multiprocessing.Process):
                         h = y2-y1
 
                         detections.append([[x1, y1, w, h], float(conf), cls_name])
-            # Track here
-
+            # Track here                
                 tracks = self.trackers[cam_id].update_tracks(detections, frame=frames[i].image)
-
             # Send the task here check if the track is in active tracks.
             # If one of active_tracks not in tracks -> make log
             # If active_track in tracks -> pass
@@ -86,9 +84,11 @@ class PostProcessWorker(multiprocessing.Process):
             #-- логирование здесь
 
                 cam_active = self.active_tracks[cam_id]
+                
                 current_active = set()
                 
                 for track in tracks:
+                    
                     if not track.is_confirmed():
                         continue
                     if track.det_class not in self.allowed_classes:
@@ -97,8 +97,9 @@ class PostProcessWorker(multiprocessing.Process):
                     track_id = track.track_id
                     current_active.add(track_id)
 
-                    if not track_id in cam_active and track.time_since_update == 0:
+                    if not track_id in cam_active :
                         log_id = timestamp + str(track_id)
+                        print(log_id)
                         cam_active[track_id] = {
                             "log_id": log_id,
                             "start_time": timestamp,
