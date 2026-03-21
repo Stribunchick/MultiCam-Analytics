@@ -81,7 +81,7 @@ class InferenceWorker(torch.multiprocessing.Process):
         print(models)
         for i, model in enumerate(models):
             _, mp = model
-            mp = "./weights/" + model
+            mp = "./weights/" + mp
             
             m, classes = self.load_yolo(mp)
             ms.append(m)

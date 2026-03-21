@@ -1,11 +1,13 @@
 import queue
+from typing import override
 import numpy as np
 
 from PySide6.QtWidgets import QWidget, QLabel, QGridLayout
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QPixmap, QImage
 
 class VideoWall(QWidget):
+    destroyed = Signal
     def __init__(self, render_queues: dict, cam_ids, cameras_per_row=4, fps=15):
         super().__init__()
 

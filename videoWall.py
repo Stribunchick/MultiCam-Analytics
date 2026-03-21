@@ -24,7 +24,7 @@ from pipeline.dblogger import DBLogger
 
 
 class VideoWallExec:
-    def __init__(self, cameras, models, config, DB_PATH, CLASSES, DEVICE="cuda:0", BATCH_SIZE=8):
+    def __init__(self, cameras, models, config, DB_PATH, CLASSES, DEVICE="cuda:0", BATCH_SIZE=4):
         self.cameras = cameras
         self.models = models
         self.BATCH_SIZE = BATCH_SIZE
@@ -47,19 +47,19 @@ class VideoWallExec:
         
             
         
-        frames_queue = multiprocessing.Queue(maxsize=64)
+        frames_queue = multiprocessing.Queue(maxsize=100)
         for camera in self.cameras:
             path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
             cc = CameraCapture(path, frames_queue, camera["id"])
             self.cam_workers[camera["id"]] = cc
 
-        tensor_queue = multiprocessing.Queue(maxsize=64)
+        tensor_queue = multiprocessing.Queue(maxsize=100)
         prepw = PreprocessWorker(frames_queue, tensor_queue, self.BATCH_SIZE)
 
-        result_queue = torch.multiprocessing.Queue(maxsize=64)
+        result_queue = torch.multiprocessing.Queue(maxsize=100)
         inf_w = InferenceWorker(tensor_queue, result_queue, models, device=self.DEVICE, conf_thresh = self.CONF_THRESH)
 
-        out_queues = {cam_id: multiprocessing.Queue(maxsize=64) for cam_id in self.cam_ids}
+        out_queues = {cam_id: multiprocessing.Queue(maxsize=100) for cam_id in self.cam_ids}
         log_queue_task = multiprocessing.Queue()
         postpw = PostProcessWorker(result_queue, out_queues, log_queue_task, self.cam_ids, self.CONF_THRESH, allowed_classes=self.CLASSES)
         
