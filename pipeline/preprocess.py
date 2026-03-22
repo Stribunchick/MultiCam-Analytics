@@ -23,7 +23,7 @@ class PreprocessWorker(multiprocessing.Process):
             while len(tensors) < self.batch_size: # Get enough frames to form a batch
                 try:
                     frame = self.frame_queue.get_nowait()# get the frame
-                except queue.Empty:
+                except:
                     break
                 # print("start preprocess", datetime.now())
                 # start = datetime.now()
@@ -41,15 +41,12 @@ class PreprocessWorker(multiprocessing.Process):
                         "FCs": FCs
                     })
                 except queue.Full:
-                    try:
-                        self.tensor_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-
+                    # self.tensor_queue.get_nowait()
+                    time.sleep(0.5)
                     self.tensor_queue.put_nowait({
                         "tensors": batch,
                         "FCs": FCs
-    })
+                    })
                 # print("stop preprocess", datetime.now())
 
 ## Оптимизировать то, что снизу

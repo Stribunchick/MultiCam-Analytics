@@ -11,6 +11,8 @@ class DBWorker:
     def __init__(self, db_path):
         self.conn = sqlite3.connect(db_path)
         self.cur = self.conn.cursor()
+        db_dir = "./db"
+        os.makedirs(db_dir, exist_ok=True)
         self.init_tables()
         
 

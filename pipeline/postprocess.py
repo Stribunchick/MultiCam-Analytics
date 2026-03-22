@@ -39,7 +39,7 @@ class PostProcessWorker(multiprocessing.Process):
             try:
                 # packet = self.to_process_queue.get(timeout=0.01)
                 packet = self.to_process_queue.get_nowait()
-            except queue.Empty:
+            except:
                 continue
             
             results = packet["results"]
@@ -99,7 +99,7 @@ class PostProcessWorker(multiprocessing.Process):
 
                     if not track_id in cam_active :
                         log_id = timestamp + str(track_id)
-                        print(log_id)
+                        # print(log_id)
                         cam_active[track_id] = {
                             "log_id": log_id,
                             "start_time": timestamp,

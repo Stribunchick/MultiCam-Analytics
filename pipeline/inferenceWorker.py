@@ -3,7 +3,7 @@ import multiprocessing
 import queue
 from ultralytics.utils import nms
 # from datetime import datetime
-# from datetime import datetime
+
 class InferenceWorker(torch.multiprocessing.Process):
     def __init__(self, tensors_queue,result_queue, models, device, conf_thresh):
         super().__init__()
@@ -26,7 +26,7 @@ class InferenceWorker(torch.multiprocessing.Process):
         while not self.stop_evt.is_set():
             try:
                 packet = self.tensors_queue.get_nowait() # Acquire FrameClasses and corresponding tensors
-            except queue.Empty:
+            except:
                 continue
             # print("start inference", datetime.now())
             # start = datetime.now()

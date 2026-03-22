@@ -3,6 +3,8 @@ import queue
 import cv2
 import time
 from pipeline.frameClass import Frame
+# from PySide6.QtCore import QThread, QTimer, Qt, Signal
+
 class CameraCapture(threading.Thread):
     def __init__(self, camera_path, to_process_queue, cam_id):
         super().__init__()
@@ -11,6 +13,7 @@ class CameraCapture(threading.Thread):
         self.to_process_queue = to_process_queue
         self.cam_id = cam_id
         print(f"CAMERACAPTURE [{cam_id}] INIT")
+        # self.timer = QTimer(self)
         
     def run(self):
         cap = cv2.VideoCapture(self.camera_path, cv2.CAP_FFMPEG)
@@ -18,12 +21,13 @@ class CameraCapture(threading.Thread):
         while not self.stop_evt.is_set():
             ok, frame = cap.read() # Get the image
             if not ok:
-                time.sleep(0.05)
+                # time.sleep(0.05)
+                print('12')
                 continue
             packet = Frame(frame, self.cam_id) # Pack the frame into a class
             try:
                 self.to_process_queue.put_nowait(packet) # Send frame
-            except queue.Full:
+            except:
                 self.to_process_queue.get_nowait()
                 self.to_process_queue.put_nowait(packet)
 
