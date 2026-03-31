@@ -25,7 +25,7 @@ class InferenceWorker(torch.multiprocessing.Process):
         self.models, self.names = self.load_models(self.models)
         while not self.stop_evt.is_set():
             try:
-                packet = self.tensors_queue.get_nowait() # Acquire FrameClasses and corresponding tensors
+                packet = self.tensors_queue.get() # Acquire FrameClasses and corresponding tensors
             except:
                 continue
             # print("start inference", datetime.now())

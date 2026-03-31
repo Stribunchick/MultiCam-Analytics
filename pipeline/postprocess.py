@@ -36,11 +36,10 @@ class PostProcessWorker(multiprocessing.Process):
         
         while not self.stop_evt.is_set():
             # Decode boxes(scale back),Draw, track, send to pyqt
-            try:
+            
                 # packet = self.to_process_queue.get(timeout=0.01)
-                packet = self.to_process_queue.get_nowait()
-            except:
-                continue
+            packet = self.to_process_queue.get()
+            
             
             results = packet["results"]
             # print(results)

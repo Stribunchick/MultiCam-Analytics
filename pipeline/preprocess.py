@@ -22,7 +22,7 @@ class PreprocessWorker(multiprocessing.Process):
             FCs = []
             while len(tensors) < self.batch_size: # Get enough frames to form a batch
                 try:
-                    frame = self.frame_queue.get_nowait()# get the frame
+                    frame = self.frame_queue.get()# get the frame
                 except:
                     break
                 # print("start preprocess", datetime.now())

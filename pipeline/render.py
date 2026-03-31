@@ -45,7 +45,7 @@ class VideoWall(QWidget):
         packets = []
         for rq in self.render_queues.values():
             try:
-                packet = rq.get_nowait()
+                packet = rq.get()
                 packets.append(packet)
             except:
                 continue

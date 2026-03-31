@@ -50,7 +50,7 @@ class VideoWallExec:
         frames_queue = multiprocessing.Queue(maxsize=128)
         for camera in self.cameras:
             path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
-            cc = CameraCapture(path, frames_queue, camera["id"])
+            cc = CameraCapture(path, frames_queue, camera["id"], fps=self.fps)
             self.cam_workers[camera["id"]] = cc
 
         tensor_queue = multiprocessing.Queue(maxsize=64)
