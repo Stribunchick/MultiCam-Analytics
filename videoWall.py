@@ -44,9 +44,6 @@ class VideoWallExec:
         
         models = self.models
         
-        
-            
-        
         frames_queue = multiprocessing.Queue(maxsize=128)
         for camera in self.cameras:
             path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
