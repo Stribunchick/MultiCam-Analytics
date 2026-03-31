@@ -6,9 +6,9 @@ import numpy as np
 import time
 # from datetime import datetime
 class PreprocessWorker(multiprocessing.Process):
-    def __init__(self, frame_queue, tensor_queue, batch_size):
+    def __init__(self, frame_queues, tensor_queue, batch_size):
         super().__init__()
-        self.frame_queue = frame_queue
+        self.frame_queues = frame_queues
         self.tensor_queue = tensor_queue
         self.batch_size = batch_size
         
@@ -20,11 +20,12 @@ class PreprocessWorker(multiprocessing.Process):
         while not self.stop_evt.is_set():
             tensors = []
             FCs = []
-            while len(tensors) < self.batch_size: # Get enough frames to form a batch
+            
+            for fq in self.frame_queues.values():
                 try:
-                    frame = self.frame_queue.get()# get the frame
-                except:
-                    break
+                    frame = fq.get(timeout=0.1)# get the frame
+                except queue.Empty:
+                    continue
                 # print("start preprocess", datetime.now())
                 # start = datetime.now()
                 tensor = self.preprocess(frame.image) # Convert from image to tensor

@@ -1,3 +1,5 @@
+from operator import mul
+
 from ultralytics import YOLO
 import queue
 import sys
@@ -38,6 +40,7 @@ class VideoWallExec:
         # cameras = [{"id":..., "ip":..., ...}]
         self.cam_ids = [camera["id"] for camera in cameras]
         self.cam_workers = {}
+        self.maxqsize = 1
     def start_videowall(self):
         print("STARTING THE VIDEOWALL...")
         cameras = self.cameras
@@ -47,19 +50,22 @@ class VideoWallExec:
         
             
         
-        frames_queue = multiprocessing.Queue(maxsize=128)
+        #frames_queue = multiprocessing.Queue(maxsize=128)
+        self.fqs = {}
         for camera in self.cameras:
             path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
+            frames_queue = multiprocessing.Queue(self.maxqsize)
             cc = CameraCapture(path, frames_queue, camera["id"], fps=self.fps)
             self.cam_workers[camera["id"]] = cc
+            self.fqs[camera["id"]] = frames_queue
 
-        tensor_queue = multiprocessing.Queue(maxsize=64)
-        prepw = PreprocessWorker(frames_queue, tensor_queue, self.BATCH_SIZE)
+        tensor_queue = multiprocessing.Queue(self.maxqsize)
+        prepw = PreprocessWorker(self.fqs, tensor_queue, self.BATCH_SIZE)
 
-        result_queue = torch.multiprocessing.Queue(maxsize=64)
+        result_queue = torch.multiprocessing.Queue(self.maxqsize)
         inf_w = InferenceWorker(tensor_queue, result_queue, models, device=self.DEVICE, conf_thresh = self.CONF_THRESH)
 
-        out_queues = {cam_id: multiprocessing.Queue(maxsize=64) for cam_id in self.cam_ids}
+        out_queues = {cam_id: multiprocessing.Queue(self.maxqsize) for cam_id in self.cam_ids}
         log_queue_task = multiprocessing.Queue()
         postpw = PostProcessWorker(result_queue, out_queues, log_queue_task, self.cam_ids, self.CONF_THRESH, allowed_classes=self.CLASSES)
         
