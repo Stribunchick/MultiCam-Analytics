@@ -37,13 +37,13 @@ class PreprocessWorker(multiprocessing.Process):
                 # print(f"[PrePW] START FROM BATCH: {start}, SEND: {stop}")
                 # print([f"[ppw] {batch}"])
                 try:
-                    self.tensor_queue.put_nowait({
+                    self.tensor_queue.put({
                         "tensors": batch,
                         "FCs": FCs
                     })
                 except queue.Full:
-                    # self.tensor_queue.get_nowait()
-                    time.sleep(0.5)
+                    self.tensor_queue.get_nowait()
+                    # time.sleep(0.5)
                     self.tensor_queue.put_nowait({
                         "tensors": batch,
                         "FCs": FCs

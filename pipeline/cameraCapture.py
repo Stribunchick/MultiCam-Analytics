@@ -36,7 +36,7 @@ class CameraCapture(threading.Thread):
 
             try:
                 self.to_process_queue.put_nowait(packet) # Send frame
-            except:
+            except queue.Full:
                 self.to_process_queue.get_nowait()
                 self.to_process_queue.put_nowait(packet)
 

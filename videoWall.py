@@ -40,16 +40,14 @@ class VideoWallExec:
         # cameras = [{"id":..., "ip":..., ...}]
         self.cam_ids = [camera["id"] for camera in cameras]
         self.cam_workers = {}
-        self.maxqsize = 1
+        self.maxqsize = 2
     def start_videowall(self):
         print("STARTING THE VIDEOWALL...")
         cameras = self.cameras
         
         models = self.models
         
-        
-            
-        
+
         #frames_queue = multiprocessing.Queue(maxsize=128)
         self.fqs = {}
         for camera in self.cameras:

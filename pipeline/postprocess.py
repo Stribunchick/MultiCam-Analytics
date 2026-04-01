@@ -6,7 +6,7 @@ from deep_sort_realtime.deepsort_tracker import DeepSort
 from pipeline.frameClass import Frame
 from datetime import datetime
 class PostProcessWorker(multiprocessing.Process):
-    def __init__(self, to_process_queue, out_queues, log_task_queue, cam_ids, conf_thresh=0.6, img_size=(640, 480), img_size_resized=(416, 416), allowed_classes:list[str] =[]):
+    def __init__(self, to_process_queue, out_queues, log_task_queue, cam_ids, conf_thresh=0.6, img_size=(640, 480), img_size_resized=(416, 416), allowed_classes:list[str] =[], counters_enabled=True):
         super().__init__()
         self.stop_evt = multiprocessing.Event()
         self.to_process_queue = to_process_queue
@@ -28,6 +28,7 @@ class PostProcessWorker(multiprocessing.Process):
         else:
             self.allowed_classes = None
 
+        self.counters_enabled = counters_enabled
         print("POSTPROCESS INIT")
 
 
@@ -81,18 +82,26 @@ class PostProcessWorker(multiprocessing.Process):
             # If tracK not in active_tracks -> end log
 
             #-- логирование здесь
-
+                # Обновление счетчиков объектов, если включены
                 cam_active = self.active_tracks[cam_id]
                 
                 current_active = set()
-                
+                if self.counters_enabled:
+                    frame_counters = {}
+                else:
+                    frame_counters = None
                 for track in tracks:
                     
                     if not track.is_confirmed():
                         continue
                     if track.det_class not in self.allowed_classes:
                         continue
-                    
+                    if self.counters_enabled:
+                        cls_name = track.det_class
+                        if cls_name not in frame_counters:
+                            frame_counters[cls_name] = 0
+                        frame_counters[cls_name] += 1
+
                     track_id = track.track_id
                     current_active.add(track_id)
 
@@ -130,7 +139,7 @@ class PostProcessWorker(multiprocessing.Process):
 
                 
 
-                self.draw_tracks(frames[i].image, tracks)
+                self.draw_tracks(frames[i].image, tracks, frame_counters)
                 # stop = datetime.now()
                 # print(f"[PostPW] START BATCH: {start}, POST FRAME {stop}")
                 try:
@@ -142,7 +151,7 @@ class PostProcessWorker(multiprocessing.Process):
                     pass
 
 
-    def draw_tracks(self, frame, tracks):    
+    def draw_tracks(self, frame, tracks, frame_counters):    
         for track in tracks:
             if not track.is_confirmed():
                 continue
@@ -163,6 +172,33 @@ class PostProcessWorker(multiprocessing.Process):
                 color,
                 1
             )
+        h, w = frame.shape[:2]
+        # Отрисовка счетчиков
+        if self.counters_enabled and frame_counters:
+            y_offset = h - 10  
+
+            for cls_name, count in frame_counters.items():
+                text = f"{cls_name}: {count}"
+
+                
+                (text_w, text_h), _ = cv2.getTextSize(
+                    text,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    text,
+                    (10, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2
+                )
+
+                y_offset -= (text_h + 10)
 
     def stop(self):
         self.stop_evt.set()
