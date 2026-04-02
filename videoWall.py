@@ -41,12 +41,14 @@ class VideoWallExec:
         self.cam_ids = [camera["id"] for camera in cameras]
         self.cam_workers = {}
         self.maxqsize = 2
+
     def start_videowall(self):
         print("STARTING THE VIDEOWALL...")
         cameras = self.cameras
-        
         models = self.models
-        
+
+        self.roi_manager = multiprocessing.Manager()
+        self.roi_state = self.roi_manager.dict({cam_id: None for cam_id in self.cam_ids})
 
         #frames_queue = multiprocessing.Queue(maxsize=128)
         self.fqs = {}
@@ -65,12 +67,26 @@ class VideoWallExec:
 
         out_queues = {cam_id: multiprocessing.Queue(self.maxqsize) for cam_id in self.cam_ids}
         log_queue_task = multiprocessing.Queue()
-        postpw = PostProcessWorker(result_queue, out_queues, log_queue_task, self.cam_ids, self.CONF_THRESH, allowed_classes=self.CLASSES)
+        postpw = PostProcessWorker(
+            result_queue,
+            out_queues,
+            log_queue_task,
+            self.cam_ids,
+            self.CONF_THRESH,
+            allowed_classes=self.CLASSES,
+            roi_state=self.roi_state,
+        )
         
         dblogger = DBLogger(self.DB_PATH, log_queue_task)
         dblogger.init_logs()
         
-        self.wall = VideoWall(out_queues, self.cam_ids, cameras_per_row=self.cameras_per_row, fps=self.fps)
+        self.wall = VideoWall(
+            out_queues,
+            self.cam_ids,
+            self.roi_state,
+            cameras_per_row=self.cameras_per_row,
+            fps=self.fps,
+        )
         self.wall.resize(1280, 480)
         
         self.wall.show()
@@ -89,8 +105,8 @@ class VideoWallExec:
             for cc in self.cam_workers.values():
                 cc.stop()
                 cc.join()
-                if cc.is_alive():
-                    cc.terminate()
+                # if cc.is_alive():
+                #     cc.terminate()
             prepw.stop()
             prepw.join(timeout=1)
             if prepw.is_alive():
@@ -107,6 +123,7 @@ class VideoWallExec:
             dblogger.join()
             if dblogger.is_alive():
                 dblogger.terminate()
+            self.roi_manager.shutdown()
             print("Videowall stopped")
         self.wall.destroyed.connect(stop_threads)
         
