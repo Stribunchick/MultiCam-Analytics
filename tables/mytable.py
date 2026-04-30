@@ -14,12 +14,20 @@ class MyTable(QWidget):
         self.initialize_table()
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
         self.layout().addWidget(self.table)
     
     def initialize_table(self):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(38)
+        self.table.horizontalHeader().setHighlightSections(False)
         
     def show_context_menu(self, pos):
         menu = QMenu(self)

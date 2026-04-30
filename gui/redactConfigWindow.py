@@ -67,7 +67,7 @@ class RedactConfigWindow(QWidget, Ui_redact_config_window):
             "fps": fps
         }
         if self.config_id is None:
-            self.dbworker.add_config(data)
+            self.config_id = self.dbworker.add_config(data)
         else:
             self.dbworker.edit_config(self.config_id, data)
 

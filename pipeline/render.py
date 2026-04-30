@@ -17,11 +17,13 @@ class CameraView(QLabel):
         self.drag_start = None
         self.drag_current = None
 
+        self.setObjectName("cameraTile")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(True)
         self.setMouseTracking(True)
         self.setMinimumSize(320, 180)
-        self.setToolTip("Left drag: set ROI, right click: clear ROI")
+        self.setText(f"Камера {cam_id}")
+        self.setToolTip("Левая кнопка: выделить ROI, правая кнопка: очистить ROI")
 
     def _read_roi(self):
         roi = self.roi_state.get(self.cam_id)
@@ -132,6 +134,7 @@ class CameraView(QLabel):
 
 class VideoWall(QWidget):
     destroyed = Signal()
+    roi_changed = Signal(int, object)
 
     def __init__(self, render_queues: dict, cam_ids, roi_state, cameras_per_row=4, fps=15):
         super().__init__()
@@ -142,13 +145,15 @@ class VideoWall(QWidget):
         self.last_frames = {cam_id: None for cam_id in cam_ids}
 
         layout = QGridLayout()
-        layout.setSpacing(2)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         self.setLayout(layout)
 
         self.labels = {}
 
         for idx, cam_id in enumerate(cam_ids):
             lbl = CameraView(cam_id, roi_state)
+            lbl.roi_changed.connect(self._on_roi_changed)
             self.labels[cam_id] = lbl
 
             row = idx // cameras_per_row
@@ -177,6 +182,9 @@ class VideoWall(QWidget):
             pix = QPixmap.fromImage(qimg)
             self.last_frames[cam_id] = pix
             self.labels[cam_id].setPixmap(pix)
+
+    def _on_roi_changed(self, cam_id, roi):
+        self.roi_changed.emit(cam_id, roi)
 
     @staticmethod
     def numpy_bgr_to_qimage(frame_bgr: np.ndarray) -> QImage:

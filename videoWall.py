@@ -13,6 +13,7 @@ from pipeline.inferenceWorker import InferenceWorker
 from pipeline.postprocess import PostProcessWorker
 from pipeline.render import VideoWall
 from pipeline.dblogger import DBLogger
+from gui.db_worker import DBWorker
 
 # Получить кадр с камеры
 # Передать кадры на инференс
@@ -35,7 +36,8 @@ class VideoWallExec:
         self.DEVICE = DEVICE
         self.CLASSES = CLASSES
         self.wall = None
-        _, self.config_name, self.cameras_per_row, self.enabled, self.CONF_THRESH, self.fps = config
+        self.config_id, self.config_name, self.cameras_per_row, self.enabled, self.CONF_THRESH, self.fps = config
+        self.dbworker = DBWorker(DB_PATH)
         
         # cameras = [{"id":..., "ip":..., ...}]
         self.cam_ids = [camera["id"] for camera in cameras]
@@ -46,9 +48,13 @@ class VideoWallExec:
         print("STARTING THE VIDEOWALL...")
         cameras = self.cameras
         models = self.models
+        saved_rois = self.dbworker.fetch_rois_by_config_id(self.config_id)
 
         self.roi_manager = multiprocessing.Manager()
-        self.roi_state = self.roi_manager.dict({cam_id: None for cam_id in self.cam_ids})
+        self.roi_state = self.roi_manager.dict({
+            cam_id: saved_rois.get(cam_id)
+            for cam_id in self.cam_ids
+        })
 
         #frames_queue = multiprocessing.Queue(maxsize=128)
         self.fqs = {}
@@ -87,6 +93,7 @@ class VideoWallExec:
             cameras_per_row=self.cameras_per_row,
             fps=self.fps,
         )
+        self.wall.roi_changed.connect(self._save_roi)
         self.wall.resize(1280, 480)
         
         self.wall.show()
@@ -126,6 +133,9 @@ class VideoWallExec:
             self.roi_manager.shutdown()
             print("Videowall stopped")
         self.wall.destroyed.connect(stop_threads)
+
+    def _save_roi(self, cam_id, roi):
+        self.dbworker.save_roi(self.config_id, cam_id, roi)
         
     def form_rtsp_link(self, username, pwd, ip):
         link = f'rtsp://{username}:{pwd}@{ip}:554/Streaming/101'

@@ -3,6 +3,7 @@ import sqlite3
 
 import os
 import sys
+from datetime import datetime
 
 from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication, QMainWindow, QTableView
@@ -14,6 +15,9 @@ class DBWorker:
         db_dir = "./db"
         os.makedirs(db_dir, exist_ok=True)
         self.init_tables()
+
+    def close(self):
+        self.conn.close()
         
 
     def init_tables(self):
@@ -78,6 +82,22 @@ class DBWorker:
                                 FOREIGN KEY(class_id) REFERENCES classes(id)
                                 )
         """)
+
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS camera_rois (
+                                config_id INTEGER NOT NULL,
+                                cam_id INTEGER NOT NULL,
+                                x1 REAL NOT NULL,
+                                y1 REAL NOT NULL,
+                                x2 REAL NOT NULL,
+                                y2 REAL NOT NULL,
+                                updated_at TEXT,
+                                PRIMARY KEY(config_id, cam_id),
+                                FOREIGN KEY(config_id) REFERENCES configs(id),
+                                FOREIGN KEY(cam_id) REFERENCES cameras(id)
+                                )
+        """)
+
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.commit()
 
@@ -116,16 +136,33 @@ class DBWorker:
         Удалить конфиг и все связи CASCADE?
         """
 
-        self.cur.execute("""
+        try:
+            self.cur.execute("""
+                DELETE FROM camera_rois WHERE config_id = ?
+            """, (config_id,))
+            self.cur.execute("""
+                DELETE FROM config_cameras WHERE config_id = ?
+            """, (config_id,))
+            self.cur.execute("""
+                DELETE FROM config_classes WHERE config_id = ?
+            """, (config_id,))
+            self.cur.execute("""
                 DELETE FROM configs WHERE id = ?
-        """, (config_id,))
-        self.conn.commit()
+            """, (config_id,))
+            self.conn.commit()
+        except sqlite3.Error:
+            self.conn.rollback()
+            raise
 
     def delete_camera(self, camera_id):
 
         """
         Удалить камеру и все связи CASCADE?
         """
+        self.cur.execute("""
+        DELETE FROM camera_rois WHERE cam_id = ?
+        """, (camera_id,))
+
         self.cur.execute("""
         DELETE FROM config_cameras WHERE cam_id = ?
         """, (camera_id,))
@@ -181,7 +218,7 @@ class DBWorker:
             INSERT INTO configs (name, cameras_per_row, enabled, conf_thresh, fps) VALUES (?, ?, ?, ?, ?)
         """, (data["name"], data["cameras_per_row"], data["enabled"], data["conf_thres"], data["fps"],))
         self.conn.commit()
-        return
+        return self.cur.lastrowid
     
     def add_camera(self, data):
         self.cur.execute("""
@@ -264,7 +301,162 @@ class DBWorker:
         for _, _, model_id in classes:
             models_ids.add(model_id)
         models_ids = list(models_ids)
+        if not models_ids:
+            return []
         placeholders = ",".join("?" for _ in models_ids)
         query = f"SELECT id, model_path FROM models WHERE id IN ({placeholders})"
         self.cur.execute(query, tuple(models_ids))
         return self.cur.fetchall()
+
+    def fetch_rois_by_config_id(self, config_id):
+        self.cur.execute("""
+            SELECT cam_id, x1, y1, x2, y2
+            FROM camera_rois
+            WHERE config_id = ?
+        """, (config_id,))
+        return {
+            cam_id: (x1, y1, x2, y2)
+            for cam_id, x1, y1, x2, y2 in self.cur.fetchall()
+        }
+
+    def save_roi(self, config_id, cam_id, roi):
+        if roi is None:
+            self.cur.execute("""
+                DELETE FROM camera_rois
+                WHERE config_id = ? AND cam_id = ?
+            """, (config_id, cam_id))
+            self.conn.commit()
+            return
+
+        x1, y1, x2, y2 = roi
+        self.cur.execute("""
+            INSERT INTO camera_rois(config_id, cam_id, x1, y1, x2, y2, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(config_id, cam_id) DO UPDATE SET
+                x1 = excluded.x1,
+                y1 = excluded.y1,
+                x2 = excluded.x2,
+                y2 = excluded.y2,
+                updated_at = excluded.updated_at
+        """, (
+            config_id,
+            cam_id,
+            float(x1),
+            float(y1),
+            float(x2),
+            float(y2),
+            datetime.now().astimezone().isoformat(" ", "seconds"),
+        ))
+        self.conn.commit()
+
+    def fetch_dashboard_events(
+        self,
+        start_dt=None,
+        end_dt=None,
+        camera_id=None,
+        event_type=None,
+        limit=None,
+    ):
+        query = """
+            SELECT
+                l.id,
+                l.cam_id,
+                COALESCE(c.name, ''),
+                COALESCE(c.location, ''),
+                l.datetimeStart,
+                l.datetimeStop,
+                l.event_type,
+                l.src
+            FROM logs l
+            LEFT JOIN cameras c ON c.id = l.cam_id
+            WHERE 1 = 1
+        """
+        params = []
+
+        if start_dt:
+            query += " AND l.datetimeStart >= ?"
+            params.append(start_dt)
+        if end_dt:
+            query += " AND l.datetimeStart <= ?"
+            params.append(end_dt)
+        if camera_id:
+            query += " AND l.cam_id = ?"
+            params.append(camera_id)
+        if event_type:
+            query += " AND l.event_type = ?"
+            params.append(event_type)
+
+        query += " ORDER BY l.datetimeStart DESC"
+
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        self.cur.execute(query, tuple(params))
+        return self.cur.fetchall()
+
+    def fetch_event_types_for_dashboard(self):
+        self.cur.execute("""
+            SELECT name FROM classes
+            UNION
+            SELECT event_type
+            FROM logs
+            WHERE event_type IS NOT NULL AND event_type <> ''
+            ORDER BY 1
+        """)
+        return [row[0] for row in self.cur.fetchall()]
+
+    def fetch_dashboard_snapshot(self, start_dt=None, end_dt=None, camera_id=None, event_type=None):
+        events = self.fetch_dashboard_events(
+            start_dt=start_dt,
+            end_dt=end_dt,
+            camera_id=camera_id,
+            event_type=event_type,
+            limit=None,
+        )
+
+        by_type = {}
+        by_camera = {}
+        durations = []
+        active_events = 0
+
+        for _, cam_id, camera_name, location, dt_start, dt_stop, etype, _ in events:
+            etype = etype or "unknown"
+            camera_label = camera_name or f"Camera {cam_id}"
+            if location:
+                camera_label = f"{camera_label} ({location})"
+
+            by_type[etype] = by_type.get(etype, 0) + 1
+            by_camera[camera_label] = by_camera.get(camera_label, 0) + 1
+
+            if not dt_stop:
+                active_events += 1
+                continue
+
+            start = self._parse_log_datetime(dt_start)
+            stop = self._parse_log_datetime(dt_stop)
+            if start is not None and stop is not None:
+                duration = max(0.0, (stop - start).total_seconds())
+                durations.append(duration)
+
+        avg_duration = sum(durations) / len(durations) if durations else 0.0
+
+        return {
+            "events": events,
+            "total": len(events),
+            "active": active_events,
+            "finished": len(events) - active_events,
+            "avg_duration": avg_duration,
+            "by_type": by_type,
+            "by_camera": by_camera,
+        }
+
+    @staticmethod
+    def _parse_log_datetime(value):
+        if not value:
+            return None
+
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None

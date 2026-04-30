@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QHeaderView, QMainWindow, QMessageBox, QVBoxLayout, QTableWidgetItem
+from PySide6.QtWidgets import QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QTableWidgetItem
 from PySide6.QtCore import Slot
 
 from ui_build.mainconfigwindow_ui import Ui_main_config_window
@@ -6,6 +6,7 @@ from ui_build.mainconfigwindow_ui import Ui_main_config_window
 from gui.cameraManagerWindow import CameraManagerWindow
 from gui.redactConfigWindow import RedactConfigWindow
 from gui.modelManagerWindow import ModelManagerWindow
+from gui.dashboardWindow import DashboardWindow
 from videoWall import VideoWallExec
 from tables.mytable import MyTable
 
@@ -15,16 +16,37 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
+        self.setMinimumSize(760, 520)
         self.db_path = "./db/logs.db"
         self.dbworker = DBWorker(self.db_path)
+        self._setup_header()
+        self._setup_dashboard_button()
         self._setup_table()
         self._load_config_table()
         self.connect_signals()
 
+    def _setup_header(self):
+        self.title_label = QLabel("MultiCam Analytics")
+        self.title_label.setObjectName("pageTitle")
+        self.subtitle_label = QLabel("Конфигурации камер, моделей и запуск видеостены")
+        self.subtitle_label.setObjectName("pageSubtitle")
+        self.verticalLayout.insertWidget(0, self.subtitle_label)
+        self.verticalLayout.insertWidget(0, self.title_label)
+
     def connect_signals(self):
         self.camera_manage_button.clicked.connect(self._on_camera_manage_button_clicked)
         self.model_manage_button.clicked.connect(self._on_model_manage_button_clicked)
+        self.dashboard_button.clicked.connect(self._on_dashboard_button_clicked)
         self.config_table.run_videowall_requested.connect(self._run_video_wall)
+
+    def _setup_dashboard_button(self):
+        self.dashboard_button = QPushButton("Аналитика")
+        for button in (self.camera_manage_button, self.model_manage_button):
+            button.setProperty("variant", "secondary")
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self.buttons_groupBox.layout().addWidget(self.dashboard_button)
+
     def _load_config_table(self):
         configs = self.dbworker.fetch_all_configs()
         self._display_configs(configs)
@@ -35,6 +57,7 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         self.config_table.edit_requested.connect(self._open_edit_window)
         self.config_table.delete_requested.connect(self._on_delete)
         temp_layout = QVBoxLayout()
+        temp_layout.setContentsMargins(0, 0, 0, 0)
         self.config_table_groupbox.setLayout(temp_layout)
         
         self.config_table_groupbox.layout().addWidget(self.config_table)
@@ -92,13 +115,20 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         )
 
         if reply == QMessageBox.Yes:
-            self.dbworker.delete_config(config_id)
-            self._load_config_table()
+            try:
+                self.dbworker.delete_config(config_id)
+                self._load_config_table()
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка удаления", str(e))
         
 
     def _on_model_manage_button_clicked(self):
         self.mmw = ModelManagerWindow(self.dbworker)
         self.mmw.show()
+
+    def _on_dashboard_button_clicked(self):
+        self.dashboard_window = DashboardWindow(self.dbworker)
+        self.dashboard_window.show()
 
     def _run_video_wall(self, config_id):
         data = self.dbworker.fetch_config_by_id(config_id)
