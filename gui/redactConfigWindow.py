@@ -1,6 +1,8 @@
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QListWidgetItem, QWidget
 from PySide6.QtCore import Qt, Slot, Signal
 
+from gui.classDangerLevels import level_color, level_label
 from ui_build.redactconfigwindow_ui import Ui_redact_config_window
 
 class RedactConfigWindow(QWidget, Ui_redact_config_window):
@@ -26,8 +28,8 @@ class RedactConfigWindow(QWidget, Ui_redact_config_window):
         self.cancel_button.clicked.connect(self._close_window)
         self.transfer_selected_cameras_right.clicked.connect(self._move_cameras_to_active)
         self.transfer_selected_cameras_left.clicked.connect(self._move_cameras_to_inactive)
-        self.transfer_selected_classes_right.clicked.connect(self._move_classes_to_inactive)
-        self.transfer_selected_classes_left.clicked.connect(self._move_classes_to_active)
+        self.transfer_selected_classes_right.clicked.connect(self._move_classes_to_active)
+        self.transfer_selected_classes_left.clicked.connect(self._move_classes_to_inactive)
     
     def get_data_by_config_id(self):
         config = self.dbworker.get_config_by_id(self.config_id)
@@ -112,16 +114,47 @@ class RedactConfigWindow(QWidget, Ui_redact_config_window):
         self.active_classes_listWidget.clear()
         self.inactive_classes_listWidget.clear()
         self.active_models = set()
-        for cls_id, name, model_id in all_classes:
+        for cls_id, name, model_id, danger_level, alert_enabled, alert_delay_sec in all_classes:
             if cls_id in active_ids:
-                self._add_item(self.active_classes_listWidget, cls_id, name)
+                self._add_class_item(
+                    self.active_classes_listWidget,
+                    cls_id,
+                    name,
+                    danger_level,
+                    alert_enabled,
+                    alert_delay_sec,
+                )
             else:
-                self._add_item(self.inactive_classes_listWidget, cls_id, name)
+                self._add_class_item(
+                    self.inactive_classes_listWidget,
+                    cls_id,
+                    name,
+                    danger_level,
+                    alert_enabled,
+                    alert_delay_sec,
+                )
 
     def _add_item(self, list_widget, id, name):
         item = QListWidgetItem(name)
         item.setData(Qt.UserRole, id)
         list_widget.addItem(item)
+
+    def _add_class_item(self, list_widget, id, name, danger_level, alert_enabled, alert_delay_sec):
+        item = QListWidgetItem(name)
+        item.setData(Qt.UserRole, id)
+        tooltip = level_label(danger_level)
+        if alert_enabled:
+            tooltip = f"{tooltip}\nОповещение: да\nЗадержка: {float(alert_delay_sec):.1f} сек"
+        else:
+            tooltip = f"{tooltip}\nОповещение: нет"
+        item.setToolTip(tooltip)
+        item.setIcon(self._class_level_icon(danger_level))
+        list_widget.addItem(item)
+
+    def _class_level_icon(self, danger_level):
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(QColor(level_color(danger_level)))
+        return QIcon(pixmap)
 
     def _move_items(self, source, target):
         for item in source.selectedItems():

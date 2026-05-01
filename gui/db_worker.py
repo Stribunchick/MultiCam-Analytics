@@ -10,11 +10,20 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QTableView
 
 class DBWorker:
     def __init__(self, db_path):
-        self.conn = sqlite3.connect(db_path)
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+
+        self.conn = sqlite3.connect(db_path, timeout=10.0)
+        self._configure_connection()
         self.cur = self.conn.cursor()
-        db_dir = "./db"
-        os.makedirs(db_dir, exist_ok=True)
         self.init_tables()
+
+    def _configure_connection(self):
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")
+        self.conn.execute("PRAGMA busy_timeout = 10000")
 
     def close(self):
         self.conn.close()
@@ -53,6 +62,9 @@ class DBWorker:
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                                 name TEXT,
                                 model_id INTEGER,
+                                danger_level TEXT NOT NULL DEFAULT 'safe',
+                                alert_enabled INTEGER NOT NULL DEFAULT 1,
+                                alert_delay_sec REAL NOT NULL DEFAULT 0,
                                 FOREIGN KEY(model_id) REFERENCES models(id)
                                 )
         """)
@@ -98,8 +110,27 @@ class DBWorker:
                                 )
         """)
 
-        self.conn.execute("PRAGMA foreign_keys = ON")
+        self._ensure_classes_schema()
         self.conn.commit()
+
+    def _ensure_classes_schema(self):
+        self.cur.execute("PRAGMA table_info(classes)")
+        columns = {row[1] for row in self.cur.fetchall()}
+        if "danger_level" not in columns:
+            self.cur.execute("""
+                ALTER TABLE classes
+                ADD COLUMN danger_level TEXT NOT NULL DEFAULT 'safe'
+            """)
+        if "alert_enabled" not in columns:
+            self.cur.execute("""
+                ALTER TABLE classes
+                ADD COLUMN alert_enabled INTEGER NOT NULL DEFAULT 1
+            """)
+        if "alert_delay_sec" not in columns:
+            self.cur.execute("""
+                ALTER TABLE classes
+                ADD COLUMN alert_delay_sec REAL NOT NULL DEFAULT 0
+            """)
 
     def fetch_all_configs(self):
         self.cur.execute("""
@@ -183,7 +214,7 @@ class DBWorker:
     
     def fetch_classes_by_id(self, config_id):
         self.cur.execute("""
-            SELECT c.*
+            SELECT c.id, c.name, c.model_id, c.danger_level, c.alert_enabled, c.alert_delay_sec
             FROM classes c
             JOIN config_classes cc ON c.id = cc.class_id
             WHERE cc.config_id = ?
@@ -251,8 +282,32 @@ class DBWorker:
 
     def get_all_classes(self):
         self.cur.execute("""
-            SELECT id, name, model_id FROM classes
+            SELECT id, name, model_id, danger_level, alert_enabled, alert_delay_sec FROM classes
         """)
+        return self.cur.fetchall()
+
+    def fetch_all_classes_with_models(self):
+        self.cur.execute("""
+            SELECT
+                c.id,
+                c.name,
+                c.model_id,
+                c.danger_level,
+                c.alert_enabled,
+                c.alert_delay_sec,
+                COALESCE(m.model_path, '')
+            FROM classes c
+            LEFT JOIN models m ON m.id = c.model_id
+            ORDER BY c.model_id, c.name
+        """)
+        return self.cur.fetchall()
+
+    def fetch_class_by_id(self, class_id):
+        self.cur.execute("""
+            SELECT id, name, model_id, danger_level, alert_enabled, alert_delay_sec
+            FROM classes
+            WHERE id = ?
+        """, (class_id,))
         return self.cur.fetchall()
 
     def add_model(self, model_path):
@@ -263,10 +318,25 @@ class DBWorker:
         model_id = self.cur.lastrowid
         return model_id
     
-    def add_class(self, name, model_id):
+    def add_class(self, name, model_id, danger_level="safe", alert_enabled=1, alert_delay_sec=0.0):
         self.cur.execute("""
-            INSERT INTO classes (name, model_id) VALUES (?, ?)
-        """, (name, model_id, ))
+            INSERT INTO classes (name, model_id, danger_level, alert_enabled, alert_delay_sec)
+            VALUES (?, ?, ?, ?, ?)
+        """, (name, model_id, danger_level, int(bool(alert_enabled)), float(alert_delay_sec)))
+        self.conn.commit()
+
+    def edit_class(self, class_id, data):
+        self.cur.execute("""
+            UPDATE classes
+            SET name = ?, danger_level = ?, alert_enabled = ?, alert_delay_sec = ?
+            WHERE id = ?
+        """, (
+            data["name"],
+            data["danger_level"],
+            int(bool(data["alert_enabled"])),
+            float(data["alert_delay_sec"]),
+            class_id,
+        ))
         self.conn.commit()
     
     def load_models(self):
@@ -298,8 +368,8 @@ class DBWorker:
     
     def get_models_by_id(self, classes):
         models_ids = set()
-        for _, _, model_id in classes:
-            models_ids.add(model_id)
+        for cls in classes:
+            models_ids.add(cls[2])
         models_ids = list(models_ids)
         if not models_ids:
             return []
@@ -405,6 +475,13 @@ class DBWorker:
             ORDER BY 1
         """)
         return [row[0] for row in self.cur.fetchall()]
+
+    def fetch_class_danger_levels(self):
+        self.cur.execute("""
+            SELECT name, danger_level
+            FROM classes
+        """)
+        return {name: danger_level for name, danger_level in self.cur.fetchall()}
 
     def fetch_dashboard_snapshot(self, start_dt=None, end_dt=None, camera_id=None, event_type=None):
         events = self.fetch_dashboard_events(

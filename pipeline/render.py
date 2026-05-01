@@ -1,9 +1,34 @@
 import queue
+import time
+
 import numpy as np
 
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QGridLayout, QLabel, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from pipeline.runtime_metrics import (
+    INFERENCE_KEY,
+    POSTPROCESS_KEY,
+    PREPROCESS_KEY,
+    SESSION_KEY,
+    capture_key,
+    display_key,
+    now_iso,
+    output_key,
+)
 
 
 class CameraView(QLabel):
@@ -136,18 +161,66 @@ class VideoWall(QWidget):
     destroyed = Signal()
     roi_changed = Signal(int, object)
 
-    def __init__(self, render_queues: dict, cam_ids, roi_state, cameras_per_row=4, fps=15):
+    def __init__(
+        self,
+        render_queues: dict,
+        cam_ids,
+        roi_state,
+        cameras_per_row=4,
+        fps=15,
+        metrics_state=None,
+        camera_names=None,
+    ):
         super().__init__()
 
         self.cam_ids = cam_ids
         self.render_queues = render_queues
         self.roi_state = roi_state
+        self.metrics_state = metrics_state
+        self.camera_names = camera_names or {
+            cam_id: f"Camera {cam_id}"
+            for cam_id in cam_ids
+        }
         self.last_frames = {cam_id: None for cam_id in cam_ids}
+        self.display_stats = {
+            cam_id: {
+                "frames_total": 0,
+                "frames_since_report": 0,
+                "fps": 0.0,
+                "last_report_at": time.monotonic(),
+            }
+            for cam_id in cam_ids
+        }
 
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
+
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(10)
+
+        self.metrics_toggle_button = QPushButton("Показать метрики")
+        self.metrics_toggle_button.clicked.connect(self._toggle_metrics_panel)
+        controls_layout.addWidget(self.metrics_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+        controls_layout.addStretch(1)
+        root.addLayout(controls_layout)
+
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+        root.addLayout(content_layout, 1)
+
+        self.metrics_panel = self._build_metrics_panel()
+        self.metrics_panel.hide()
+
+        video_container = QWidget()
         layout = QGridLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
-        self.setLayout(layout)
+        video_container.setLayout(layout)
+        content_layout.addWidget(video_container, 1)
+        content_layout.addWidget(self.metrics_panel, 0)
 
         self.labels = {}
 
@@ -163,7 +236,72 @@ class VideoWall(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_ui)
         self.timer.start(int(1000 / fps))
+
+        self.metrics_timer = QTimer(self)
+        self.metrics_timer.timeout.connect(self.refresh_metrics)
+        self.metrics_timer.start(500)
+        self.refresh_metrics()
         print("RENDER INIT")
+
+    def _build_metrics_panel(self):
+        panel = QWidget()
+        panel.setMinimumWidth(360)
+        panel.setMaximumWidth(420)
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        summary_box = QGroupBox("Состояние системы")
+        summary_grid = QGridLayout(summary_box)
+        summary_grid.setSpacing(8)
+
+        self.session_value = QLabel("-")
+        self.pipeline_value = QLabel("-")
+        self.batch_value = QLabel("-")
+        self.gpu_value = QLabel("-")
+        self.drops_value = QLabel("-")
+        self.tracks_value = QLabel("-")
+
+        summary_grid.addWidget(QLabel("Сессия"), 0, 0)
+        summary_grid.addWidget(self.session_value, 0, 1)
+        summary_grid.addWidget(QLabel("Пайплайн"), 1, 0)
+        summary_grid.addWidget(self.pipeline_value, 1, 1)
+        summary_grid.addWidget(QLabel("Батчи"), 2, 0)
+        summary_grid.addWidget(self.batch_value, 2, 1)
+        summary_grid.addWidget(QLabel("GPU"), 3, 0)
+        summary_grid.addWidget(self.gpu_value, 3, 1)
+        summary_grid.addWidget(QLabel("Дропы"), 4, 0)
+        summary_grid.addWidget(self.drops_value, 4, 1)
+        summary_grid.addWidget(QLabel("Треки"), 5, 0)
+        summary_grid.addWidget(self.tracks_value, 5, 1)
+
+        layout.addWidget(summary_box)
+
+        cameras_box = QGroupBox("Метрики по камерам")
+        cameras_layout = QVBoxLayout(cameras_box)
+        self.metrics_table = QTableWidget()
+        self.metrics_table.setColumnCount(8)
+        self.metrics_table.setHorizontalHeaderLabels([
+            "Камера",
+            "In FPS",
+            "Out FPS",
+            "UI FPS",
+            "In drops",
+            "Out drops",
+            "Read err",
+            "Tracks",
+        ])
+        header = self.metrics_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 8):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.metrics_table.verticalHeader().setVisible(False)
+        self.metrics_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        cameras_layout.addWidget(self.metrics_table)
+        layout.addWidget(cameras_box, 1)
+
+        return panel
 
     def update_ui(self):
         for cam_id, rq in self.render_queues.items():
@@ -182,6 +320,129 @@ class VideoWall(QWidget):
             pix = QPixmap.fromImage(qimg)
             self.last_frames[cam_id] = pix
             self.labels[cam_id].setPixmap(pix)
+            self._update_display_metrics(cam_id)
+
+    def _update_display_metrics(self, cam_id):
+        if self.metrics_state is None:
+            return
+
+        stats = self.display_stats[cam_id]
+        stats["frames_total"] += 1
+        stats["frames_since_report"] += 1
+
+        now_monotonic = time.monotonic()
+        report_interval = now_monotonic - stats["last_report_at"]
+        if report_interval < 1.0:
+            return
+
+        stats["fps"] = stats["frames_since_report"] / max(report_interval, 1e-6)
+        self.metrics_state[display_key(cam_id)] = {
+            "camera_id": cam_id,
+            "camera_name": self.camera_names.get(cam_id, f"Camera {cam_id}"),
+            "fps": round(stats["fps"], 2),
+            "frames_total": stats["frames_total"],
+            "updated_at": now_iso(),
+        }
+        stats["frames_since_report"] = 0
+        stats["last_report_at"] = now_monotonic
+
+    def refresh_metrics(self):
+        if self.metrics_state is None:
+            return
+
+        session = dict(self.metrics_state.get(SESSION_KEY, {}))
+        preprocess = dict(self.metrics_state.get(PREPROCESS_KEY, {}))
+        inference = dict(self.metrics_state.get(INFERENCE_KEY, {}))
+        postprocess = dict(self.metrics_state.get(POSTPROCESS_KEY, {}))
+
+        capture_metrics = {
+            cam_id: dict(self.metrics_state.get(capture_key(cam_id), {}))
+            for cam_id in self.cam_ids
+        }
+        output_metrics = {
+            cam_id: dict(self.metrics_state.get(output_key(cam_id), {}))
+            for cam_id in self.cam_ids
+        }
+        display_metrics = {
+            cam_id: dict(self.metrics_state.get(display_key(cam_id), {}))
+            for cam_id in self.cam_ids
+        }
+
+        total_capture_fps = sum(item.get("fps", 0.0) for item in capture_metrics.values())
+        total_output_fps = sum(item.get("fps", 0.0) for item in output_metrics.values())
+        total_display_fps = sum(item.get("fps", 0.0) for item in display_metrics.values())
+        total_input_drops = sum(item.get("queue_drops", 0) for item in capture_metrics.values())
+        total_output_drops = sum(item.get("queue_drops", 0) for item in output_metrics.values())
+        total_read_errors = sum(item.get("read_errors", 0) for item in capture_metrics.values())
+
+        self.session_value.setText(
+            f"{session.get('status', '-')}"
+            f"\nКамер: {session.get('camera_count', 0)}"
+            f"\nМоделей: {session.get('model_count', 0)}"
+            f"\nTarget FPS: {session.get('target_fps', 0)}"
+        )
+        self.pipeline_value.setText(
+            f"Capture: {total_capture_fps:.1f}"
+            f"\nPre: {preprocess.get('fps', 0.0):.1f}"
+            f"\nInfer: {inference.get('fps', 0.0):.1f}"
+            f"\nPost/UI: {postprocess.get('fps', 0.0):.1f}/{total_display_fps:.1f}"
+        )
+        self.batch_value.setText(
+            f"Cfg: {session.get('configured_batch_size', 0)}"
+            f"\nLast: {preprocess.get('last_batch_size', 0)}"
+            f"\nAvg: {preprocess.get('avg_batch_size', 0.0)}"
+            f"\nInfer ms: {inference.get('last_inference_ms', 0.0)}"
+        )
+        self.gpu_value.setText(
+            f"Alloc: {inference.get('gpu_allocated_mb', 0.0)} MB"
+            f"\nReserved: {inference.get('gpu_reserved_mb', 0.0)} MB"
+            f"\nPeak: {inference.get('gpu_peak_mb', 0.0)} MB"
+        )
+        self.drops_value.setText(
+            f"In: {total_input_drops}"
+            f"\nTensor: {preprocess.get('queue_overwrites', 0)}"
+            f"\nResult: {inference.get('queue_drops', 0)}"
+            f"\nOut: {total_output_drops}"
+        )
+        self.tracks_value.setText(
+            f"Visible: {postprocess.get('visible_tracks', 0)}"
+            f"\nActive: {postprocess.get('active_tracks', 0)}"
+            f"\nRead err: {total_read_errors}"
+            f"\nOut FPS: {total_output_fps:.1f}"
+        )
+
+        self._fill_camera_metrics_table(capture_metrics, output_metrics, display_metrics)
+
+    def _fill_camera_metrics_table(self, capture_metrics, output_metrics, display_metrics):
+        self.metrics_table.setRowCount(len(self.cam_ids))
+
+        for row, cam_id in enumerate(self.cam_ids):
+            capture = capture_metrics.get(cam_id, {})
+            output = output_metrics.get(cam_id, {})
+            display = display_metrics.get(cam_id, {})
+            camera_name = self.camera_names.get(cam_id, f"Camera {cam_id}")
+            values = [
+                camera_name,
+                f"{capture.get('fps', 0.0):.1f}",
+                f"{output.get('fps', 0.0):.1f}",
+                f"{display.get('fps', 0.0):.1f}",
+                str(capture.get("queue_drops", 0)),
+                str(output.get("queue_drops", 0)),
+                str(capture.get("read_errors", 0)),
+                str(output.get("active_tracks", 0)),
+            ]
+            for col, value in enumerate(values):
+                self.metrics_table.setItem(row, col, QTableWidgetItem(value))
+
+    def _toggle_metrics_panel(self):
+        if self.metrics_panel.isVisible():
+            self.metrics_panel.hide()
+            self.metrics_toggle_button.setText("Показать метрики")
+            return
+
+        self.metrics_panel.show()
+        self.metrics_toggle_button.setText("Скрыть метрики")
+        self.refresh_metrics()
 
     def _on_roi_changed(self, cam_id, roi):
         self.roi_changed.emit(cam_id, roi)

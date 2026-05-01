@@ -13,6 +13,7 @@ from pipeline.inferenceWorker import InferenceWorker
 from pipeline.postprocess import PostProcessWorker
 from pipeline.render import VideoWall
 from pipeline.dblogger import DBLogger
+from pipeline.runtime_metrics import init_metrics_state, mark_session_status
 from gui.db_worker import DBWorker
 
 # Получить кадр с камеры
@@ -55,21 +56,48 @@ class VideoWallExec:
             cam_id: saved_rois.get(cam_id)
             for cam_id in self.cam_ids
         })
+        self.metrics_state = self.roi_manager.dict()
+        init_metrics_state(
+            self.metrics_state,
+            self.cameras,
+            models,
+            self.fps,
+            self.BATCH_SIZE,
+        )
+        mark_session_status(self.metrics_state, "running")
 
         #frames_queue = multiprocessing.Queue(maxsize=128)
         self.fqs = {}
         for camera in self.cameras:
             path = self.form_rtsp_link(camera["username"], camera["pwd"], camera["ip"])
             frames_queue = multiprocessing.Queue(self.maxqsize)
-            cc = CameraCapture(path, frames_queue, camera["id"], fps=self.fps)
+            cc = CameraCapture(
+                path,
+                frames_queue,
+                camera["id"],
+                fps=self.fps,
+                metrics_state=self.metrics_state,
+            )
             self.cam_workers[camera["id"]] = cc
             self.fqs[camera["id"]] = frames_queue
 
         tensor_queue = multiprocessing.Queue(self.maxqsize)
-        prepw = PreprocessWorker(self.fqs, tensor_queue, self.BATCH_SIZE)
+        prepw = PreprocessWorker(
+            self.fqs,
+            tensor_queue,
+            self.BATCH_SIZE,
+            metrics_state=self.metrics_state,
+        )
 
         result_queue = torch.multiprocessing.Queue(self.maxqsize)
-        inf_w = InferenceWorker(tensor_queue, result_queue, models, device=self.DEVICE, conf_thresh = self.CONF_THRESH)
+        inf_w = InferenceWorker(
+            tensor_queue,
+            result_queue,
+            models,
+            device=self.DEVICE,
+            conf_thresh=self.CONF_THRESH,
+            metrics_state=self.metrics_state,
+        )
 
         out_queues = {cam_id: multiprocessing.Queue(self.maxqsize) for cam_id in self.cam_ids}
         log_queue_task = multiprocessing.Queue()
@@ -81,6 +109,7 @@ class VideoWallExec:
             self.CONF_THRESH,
             allowed_classes=self.CLASSES,
             roi_state=self.roi_state,
+            metrics_state=self.metrics_state,
         )
         
         dblogger = DBLogger(self.DB_PATH, log_queue_task)
@@ -92,6 +121,8 @@ class VideoWallExec:
             self.roi_state,
             cameras_per_row=self.cameras_per_row,
             fps=self.fps,
+            metrics_state=self.metrics_state,
+            camera_names={camera["id"]: camera["name"] for camera in self.cameras},
         )
         self.wall.roi_changed.connect(self._save_roi)
         self.wall.resize(1280, 480)
@@ -109,6 +140,7 @@ class VideoWallExec:
         
         def stop_threads():
             print("Stopping the videowall...")
+            mark_session_status(self.metrics_state, "stopping")
             for cc in self.cam_workers.values():
                 cc.stop()
                 cc.join()
@@ -130,6 +162,7 @@ class VideoWallExec:
             dblogger.join()
             if dblogger.is_alive():
                 dblogger.terminate()
+            mark_session_status(self.metrics_state, "stopped")
             self.roi_manager.shutdown()
             print("Videowall stopped")
         self.wall.destroyed.connect(stop_threads)

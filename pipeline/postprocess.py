@@ -1,9 +1,12 @@
 import multiprocessing
 import queue
 import cv2
+import time
 
 from deep_sort_realtime.deepsort_tracker import DeepSort
+from gui.classDangerLevels import level_bgr
 from pipeline.frameClass import Frame
+from pipeline.runtime_metrics import POSTPROCESS_KEY, now_iso, output_key
 
 
 class PostProcessWorker(multiprocessing.Process):
@@ -18,6 +21,7 @@ class PostProcessWorker(multiprocessing.Process):
         allowed_classes: list[str] = None,
         counters_enabled=True,
         roi_state=None,
+        metrics_state=None,
     ):
         super().__init__()
         self.stop_evt = multiprocessing.Event()
@@ -28,10 +32,26 @@ class PostProcessWorker(multiprocessing.Process):
         self.cam_ids = cam_ids
         self.model_img_size = img_size_resized
         self.roi_state = roi_state
+        self.metrics_state = metrics_state
 
         self.active_tracks = {cam_id: {} for cam_id in cam_ids}
+        self.class_danger_levels = {}
+        self.class_alert_settings = {}
+        self.unknown_class_ids = set()
         if allowed_classes:
-            self.allowed_classes = [name for _, name, _ in allowed_classes]
+            self.allowed_classes = [cls[1] for cls in allowed_classes]
+            self.class_danger_levels = {
+                cls[1]: cls[3]
+                for cls in allowed_classes
+                if len(cls) > 3
+            }
+            self.class_alert_settings = {
+                cls[1]: {
+                    "alert_enabled": bool(cls[4]) if len(cls) > 4 else True,
+                    "alert_delay_sec": float(cls[5]) if len(cls) > 5 else 0.0,
+                }
+                for cls in allowed_classes
+            }
         else:
             self.allowed_classes = None
 
@@ -39,6 +59,24 @@ class PostProcessWorker(multiprocessing.Process):
         print("POSTPROCESS INIT")
 
     def run(self):
+        packets_total = 0
+        frames_total = 0
+        frames_since_report = 0
+        packet_ms_sum = 0.0
+        last_report_at = time.monotonic()
+        camera_stats = {
+            cam_id: {
+                "frames_total": 0,
+                "frames_since_report": 0,
+                "fps": 0.0,
+                "queue_drops": 0,
+                "visible_tracks": 0,
+                "active_tracks": 0,
+                "last_report_at": time.monotonic(),
+            }
+            for cam_id in self.cam_ids
+        }
+
         self.trackers = {
             cam_id: DeepSort(
                 nn_budget=15,
@@ -54,10 +92,13 @@ class PostProcessWorker(multiprocessing.Process):
 
         while not self.stop_evt.is_set():
             packet = self.to_process_queue.get()
+            packet_started_at = time.perf_counter()
 
             results = packet["results"]
             frames: list[Frame] = packet["FCs"]
             names = packet["names"]
+            packet_visible_tracks = 0
+            packet_active_tracks = 0
 
             for frame_idx, frame in enumerate(frames):
                 detections = []
@@ -75,7 +116,8 @@ class PostProcessWorker(multiprocessing.Process):
                     confs = res[:, 4]
                     clss = res[:, 5]
                     for box, conf, cls in zip(boxes, confs, clss):
-                        cls_name = resnames[int(cls)]
+                        cls_id = int(cls)
+                        cls_name = self._resolve_class_name(resnames, cls_id)
                         x1, y1, x2, y2 = map(int, box)
                         x1 = int(x1 * sx)
                         y1 = int(y1 * sy)
@@ -110,51 +152,133 @@ class PostProcessWorker(multiprocessing.Process):
                         frame_counters[cls_name] = frame_counters.get(cls_name, 0) + 1
 
                     track_id = track.track_id
+                    cls_name = track.det_class
                     current_active.add(track_id)
 
-                    if track_id in cam_active:
+                    track_state = cam_active.get(track_id)
+                    if track_state is not None and track_state["class_name"] != cls_name:
+                        self._finish_alert(track_state, timestamp)
+                        del cam_active[track_id]
+                        track_state = None
+
+                    if track_state is None:
+                        track_state = {
+                            "class_name": cls_name,
+                            "first_seen_monotonic": time.monotonic(),
+                            "alert_started": False,
+                            "log_id": None,
+                        }
+                        cam_active[track_id] = track_state
+
+                    if not self._alert_enabled(cls_name):
                         continue
 
-                    log_id = timestamp + str(track_id)
-                    cam_active[track_id] = {
-                        "log_id": log_id,
-                        "start_time": timestamp,
-                        "class_name": track.det_class,
-                    }
+                    if track_state["alert_started"]:
+                        continue
 
+                    if (time.monotonic() - track_state["first_seen_monotonic"]) < self._alert_delay_sec(cls_name):
+                        continue
+
+                    log_id = f"{cam_id}:{track_id}:{timestamp}"
+                    track_state["log_id"] = log_id
+                    track_state["alert_started"] = True
                     self.log_task_queue.put_nowait(
                         {
                             "action": "start",
                             "id": log_id,
-                            "datetimeStart": cam_active[track_id]["start_time"],
+                            "datetimeStart": timestamp,
                             "cam_id": cam_id,
-                            "event_type": track.det_class,
+                            "event_type": cls_name,
                             "src": "test",
                         }
                     )
 
                 lost_ids = set(cam_active.keys()) - current_active
                 for track_id in lost_ids:
-                    log_info = cam_active[track_id]
-                    self.log_task_queue.put_nowait(
-                        {
-                            "action": "end",
-                            "log_id": log_info["log_id"],
-                            "datetimeStop": timestamp,
-                        }
-                    )
+                    self._finish_alert(cam_active[track_id], timestamp)
                     del cam_active[track_id]
 
+                packet_visible_tracks += len(visible_tracks)
+                packet_active_tracks += len(cam_active)
+                self._update_camera_stats(
+                    cam_id,
+                    camera_stats,
+                    len(visible_tracks),
+                    len(cam_active),
+                )
                 self.draw_tracks(frame.image, visible_tracks, frame_counters)
                 try:
                     self.out_queues[cam_id].put_nowait({"frame": frame})
                 except queue.Full:
-                    pass
+                    camera_stats[cam_id]["queue_drops"] += 1
+
+                self._maybe_publish_camera_metrics(cam_id, camera_stats)
+
+            packet_ms = (time.perf_counter() - packet_started_at) * 1000.0
+            packets_total += 1
+            frames_total += len(frames)
+            frames_since_report += len(frames)
+            packet_ms_sum += packet_ms
+
+            if time.monotonic() - last_report_at >= 1.0:
+                report_interval = max(time.monotonic() - last_report_at, 1e-6)
+                self._publish_global_metrics(
+                    frames_total,
+                    packet_ms,
+                    packet_ms_sum / max(packets_total, 1),
+                    packet_visible_tracks,
+                    packet_active_tracks,
+                    frames_since_report / report_interval,
+                )
+                frames_since_report = 0
+                last_report_at = time.monotonic()
 
     def _is_allowed_class(self, cls_name):
         if self.allowed_classes is None:
             return True
         return cls_name in self.allowed_classes
+
+    def _alert_enabled(self, cls_name):
+        settings = self.class_alert_settings.get(cls_name)
+        if settings is None:
+            return self.allowed_classes is None
+        return bool(settings.get("alert_enabled"))
+
+    def _alert_delay_sec(self, cls_name):
+        settings = self.class_alert_settings.get(cls_name)
+        if settings is None:
+            return 0.0
+        return max(0.0, float(settings.get("alert_delay_sec", 0.0)))
+
+    def _finish_alert(self, track_state, timestamp):
+        log_id = track_state.get("log_id")
+        if not track_state.get("alert_started") or not log_id:
+            return
+
+        self.log_task_queue.put_nowait(
+            {
+                "action": "end",
+                "log_id": log_id,
+                "datetimeStop": timestamp,
+            }
+        )
+
+    def _resolve_class_name(self, resnames, cls_id):
+        if isinstance(resnames, dict):
+            if cls_id in resnames:
+                return str(resnames[cls_id])
+
+            string_key = str(cls_id)
+            if string_key in resnames:
+                return str(resnames[string_key])
+        elif isinstance(resnames, (list, tuple)):
+            if 0 <= cls_id < len(resnames):
+                return str(resnames[cls_id])
+
+        if cls_id not in self.unknown_class_ids:
+            print(f"[POSTPROCESS] Unknown class id {cls_id} in model names mapping")
+            self.unknown_class_ids.add(cls_id)
+        return f"class_{cls_id}"
 
     def _roi_rect_for_frame(self, cam_id, frame_w, frame_h):
         if self.roi_state is None:
@@ -190,7 +314,7 @@ class PostProcessWorker(multiprocessing.Process):
             x1, y1, x2, y2 = map(int, track.to_ltrb())
             track_id = track.track_id
             cls_name = track.det_class
-            color = (0, 255, 0)
+            color = self._track_color(cls_name)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
             label = f"{cls_name} ID:{track_id}"
@@ -228,6 +352,64 @@ class PostProcessWorker(multiprocessing.Process):
                 )
 
                 y_offset -= text_h + 10
+
+    def _track_color(self, cls_name):
+        danger_level = self.class_danger_levels.get(cls_name, "safe")
+        return level_bgr(danger_level)
+
+    def _update_camera_stats(self, cam_id, camera_stats, visible_tracks, active_tracks):
+        stats = camera_stats[cam_id]
+        stats["frames_total"] += 1
+        stats["frames_since_report"] += 1
+        stats["visible_tracks"] = visible_tracks
+        stats["active_tracks"] = active_tracks
+
+    def _maybe_publish_camera_metrics(self, cam_id, camera_stats):
+        if self.metrics_state is None:
+            return
+
+        stats = camera_stats[cam_id]
+        now_monotonic = time.monotonic()
+        report_interval = now_monotonic - stats["last_report_at"]
+        if report_interval < 1.0:
+            return
+
+        fps = stats["frames_since_report"] / max(report_interval, 1e-6)
+        previous = self.metrics_state.get(output_key(cam_id), {})
+        self.metrics_state[output_key(cam_id)] = {
+            "camera_id": cam_id,
+            "camera_name": previous.get("camera_name", f"Camera {cam_id}"),
+            "fps": round(fps, 2),
+            "frames_total": stats["frames_total"],
+            "queue_drops": stats["queue_drops"],
+            "visible_tracks": stats["visible_tracks"],
+            "active_tracks": stats["active_tracks"],
+            "updated_at": now_iso(),
+        }
+        stats["frames_since_report"] = 0
+        stats["last_report_at"] = now_monotonic
+
+    def _publish_global_metrics(
+        self,
+        frames_total,
+        last_packet_ms,
+        avg_packet_ms,
+        visible_tracks,
+        active_tracks,
+        fps,
+    ):
+        if self.metrics_state is None:
+            return
+
+        self.metrics_state[POSTPROCESS_KEY] = {
+            "frames_total": frames_total,
+            "last_packet_ms": round(last_packet_ms, 2),
+            "avg_packet_ms": round(avg_packet_ms, 2),
+            "visible_tracks": visible_tracks,
+            "active_tracks": active_tracks,
+            "fps": round(fps, 2),
+            "updated_at": now_iso(),
+        }
 
     def stop(self):
         self.stop_evt.set()

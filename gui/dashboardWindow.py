@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.classDangerLevels import level_color
+
 
 class BarChartWidget(QWidget):
     def __init__(self, title):
@@ -101,6 +103,7 @@ class DashboardWindow(QWidget):
         self.setMinimumSize(900, 620)
 
         self._setup_ui()
+        self.class_danger_levels = {}
         self._load_filter_values()
         self.refresh()
 
@@ -217,6 +220,7 @@ class DashboardWindow(QWidget):
             camera_id=camera_id,
             event_type=event_type,
         )
+        self.class_danger_levels = self.dbworker.fetch_class_danger_levels()
         events = self.dbworker.fetch_dashboard_events(
             start_dt=start_dt,
             end_dt=end_dt,
@@ -253,9 +257,22 @@ class DashboardWindow(QWidget):
             ]
 
             for col, value in enumerate(values):
-                self.events_table.setItem(row, col, QTableWidgetItem(str(value or "")))
+                item = QTableWidgetItem(str(value or ""))
+                if col == 5 and value:
+                    self._apply_event_level_style(item, str(value))
+                self.events_table.setItem(row, col, item)
 
         self.events_table.resizeColumnsToContents()
+
+    def _apply_event_level_style(self, item, event_type):
+        danger_level = self.class_danger_levels.get(event_type)
+        if not danger_level:
+            return
+
+        background = QColor(level_color(danger_level))
+        foreground = QColor("black") if background.lightness() > 150 else QColor("white")
+        item.setBackground(background)
+        item.setForeground(foreground)
 
     def _duration_from_strings(self, start, stop):
         if not stop:

@@ -10,8 +10,17 @@ class DBLogger(multiprocessing.Process):
         self.log_queue = log_queue
         self.stop_evt = multiprocessing.Event()
 
+    @staticmethod
+    def _configure_connection(conn):
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA busy_timeout = 10000;")
+
     def init_logs(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        self._configure_connection(conn)
         c = conn.cursor()
         c.execute("""
 CREATE TABLE IF NOT EXISTS logs(
@@ -44,19 +53,23 @@ CREATE TABLE IF NOT EXISTS logs(
         """, (dtStop, log_id))
 
     def run(self):
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.conn.execute("PRAGMA temp_store=MEMORY;")
+        self.conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+        self._configure_connection(self.conn)
         self.cursor = self.conn.cursor()
 
         BATCH_SIZE = 100      # коммитим каждые 100 записей
+        COMMIT_INTERVAL = 0.25
         pending = 0
+        last_commit_at = time.monotonic()
 
         while not self.stop_evt.is_set():
             try:
                 task = self.log_queue.get(timeout=0.1)
             except Empty:
+                if pending and (time.monotonic() - last_commit_at) >= COMMIT_INTERVAL:
+                    self.conn.commit()
+                    pending = 0
+                    last_commit_at = time.monotonic()
                 continue
 
             action = task["action"]
@@ -73,9 +86,10 @@ CREATE TABLE IF NOT EXISTS logs(
                 self.stop_action(log_id, dtStop)
 
             pending += 1
-            if pending >= BATCH_SIZE:
+            if pending >= BATCH_SIZE or (time.monotonic() - last_commit_at) >= COMMIT_INTERVAL:
                 self.conn.commit()
                 pending = 0
+                last_commit_at = time.monotonic()
 
         # Финальный коммит при остановке
         self.conn.commit()
