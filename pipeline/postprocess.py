@@ -1,7 +1,9 @@
+import os
 import multiprocessing
 import queue
 import cv2
 import time
+from datetime import datetime
 
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from gui.classDangerLevels import level_bgr
@@ -22,6 +24,7 @@ class PostProcessWorker(multiprocessing.Process):
         counters_enabled=True,
         roi_state=None,
         metrics_state=None,
+        snapshot_dir=None,
     ):
         super().__init__()
         self.stop_evt = multiprocessing.Event()
@@ -33,6 +36,7 @@ class PostProcessWorker(multiprocessing.Process):
         self.model_img_size = img_size_resized
         self.roi_state = roi_state
         self.metrics_state = metrics_state
+        self.snapshot_dir = snapshot_dir
 
         self.active_tracks = {cam_id: {} for cam_id in cam_ids}
         self.class_danger_levels = {}
@@ -56,6 +60,8 @@ class PostProcessWorker(multiprocessing.Process):
             self.allowed_classes = None
 
         self.counters_enabled = counters_enabled
+        if self.snapshot_dir:
+            os.makedirs(self.snapshot_dir, exist_ok=True)
         print("POSTPROCESS INIT")
 
     def run(self):
@@ -90,8 +96,17 @@ class PostProcessWorker(multiprocessing.Process):
             for cam_id in self.cam_ids
         }
 
-        while not self.stop_evt.is_set():
-            packet = self.to_process_queue.get()
+        while True:
+            try:
+                packet = self.to_process_queue.get(timeout=0.1)
+            except queue.Empty:
+                if self.stop_evt.is_set():
+                    break
+                continue
+
+            if packet is None:
+                break
+
             packet_started_at = time.perf_counter()
 
             results = packet["results"]
@@ -180,8 +195,10 @@ class PostProcessWorker(multiprocessing.Process):
                         continue
 
                     log_id = f"{cam_id}:{track_id}:{timestamp}"
+                    snapshot_path = self._save_alert_snapshot(frame.image, track, cam_id, cls_name, timestamp)
                     track_state["log_id"] = log_id
                     track_state["alert_started"] = True
+                    track_state["snapshot_path"] = snapshot_path
                     self.log_task_queue.put_nowait(
                         {
                             "action": "start",
@@ -190,6 +207,7 @@ class PostProcessWorker(multiprocessing.Process):
                             "cam_id": cam_id,
                             "event_type": cls_name,
                             "src": "test",
+                            "snapshot_path": snapshot_path,
                         }
                     )
 
@@ -233,6 +251,8 @@ class PostProcessWorker(multiprocessing.Process):
                 frames_since_report = 0
                 last_report_at = time.monotonic()
 
+        self._close_all_active_tracks(self._shutdown_timestamp())
+
     def _is_allowed_class(self, cls_name):
         if self.allowed_classes is None:
             return True
@@ -262,6 +282,16 @@ class PostProcessWorker(multiprocessing.Process):
                 "datetimeStop": timestamp,
             }
         )
+
+    def _close_all_active_tracks(self, timestamp):
+        for cam_tracks in self.active_tracks.values():
+            for track_state in list(cam_tracks.values()):
+                self._finish_alert(track_state, timestamp)
+            cam_tracks.clear()
+
+    @staticmethod
+    def _shutdown_timestamp():
+        return datetime.now().astimezone().isoformat(" ", "seconds")
 
     def _resolve_class_name(self, resnames, cls_id):
         if isinstance(resnames, dict):
@@ -357,6 +387,40 @@ class PostProcessWorker(multiprocessing.Process):
         danger_level = self.class_danger_levels.get(cls_name, "safe")
         return level_bgr(danger_level)
 
+    def _save_alert_snapshot(self, frame, track, cam_id, cls_name, timestamp):
+        if not self.snapshot_dir:
+            return None
+
+        try:
+            image = frame.copy()
+            x1, y1, x2, y2 = map(int, track.to_ltrb())
+            color = self._track_color(cls_name)
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                image,
+                f"{cls_name} ID:{track.track_id}",
+                (x1, max(20, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+            )
+
+            safe_timestamp = timestamp.replace(":", "-").replace(" ", "_")
+            safe_class_name = "".join(
+                char if char.isalnum() or char in ("-", "_") else "_"
+                for char in str(cls_name)
+            )
+            filename = f"cam_{cam_id}_{safe_class_name}_{safe_timestamp}_{track.track_id}.jpg"
+            snapshot_path = os.path.abspath(os.path.join(self.snapshot_dir, filename))
+
+            if cv2.imwrite(snapshot_path, image):
+                return snapshot_path
+        except Exception as exc:
+            print(f"[POSTPROCESS] Failed to save snapshot: {exc}")
+
+        return None
+
     def _update_camera_stats(self, cam_id, camera_stats, visible_tracks, active_tracks):
         stats = camera_stats[cam_id]
         stats["frames_total"] += 1
@@ -413,3 +477,7 @@ class PostProcessWorker(multiprocessing.Process):
 
     def stop(self):
         self.stop_evt.set()
+        try:
+            self.to_process_queue.put_nowait(None)
+        except queue.Full:
+            pass

@@ -110,7 +110,21 @@ class DBWorker:
                                 )
         """)
 
+        self.cur.execute("""
+        CREATE TABLE IF NOT EXISTS logs(
+                                id TEXT,
+                                cam_id INTEGER,
+                                datetimeStart TEXT,
+                                datetimeStop TEXT,
+                                event_type TEXT,
+                                src TEXT,
+                                snapshot_path TEXT,
+                                FOREIGN KEY(cam_id) REFERENCES cameras(id)
+                                )
+        """)
+
         self._ensure_classes_schema()
+        self._ensure_logs_schema()
         self.conn.commit()
 
     def _ensure_classes_schema(self):
@@ -130,6 +144,15 @@ class DBWorker:
             self.cur.execute("""
                 ALTER TABLE classes
                 ADD COLUMN alert_delay_sec REAL NOT NULL DEFAULT 0
+            """)
+
+    def _ensure_logs_schema(self):
+        self.cur.execute("PRAGMA table_info(logs)")
+        columns = {row[1] for row in self.cur.fetchall()}
+        if "snapshot_path" not in columns:
+            self.cur.execute("""
+                ALTER TABLE logs
+                ADD COLUMN snapshot_path TEXT
             """)
 
     def fetch_all_configs(self):
@@ -436,7 +459,8 @@ class DBWorker:
                 l.datetimeStart,
                 l.datetimeStop,
                 l.event_type,
-                l.src
+                l.src,
+                l.snapshot_path
             FROM logs l
             LEFT JOIN cameras c ON c.id = l.cam_id
             WHERE 1 = 1
@@ -497,7 +521,7 @@ class DBWorker:
         durations = []
         active_events = 0
 
-        for _, cam_id, camera_name, location, dt_start, dt_stop, etype, _ in events:
+        for _, cam_id, camera_name, location, dt_start, dt_stop, etype, _, _ in events:
             etype = etype or "unknown"
             camera_label = camera_name or f"Camera {cam_id}"
             if location:

@@ -78,6 +78,8 @@ class PreprocessWorker(multiprocessing.Process):
                     frames_since_report = 0
                     last_report_at = time.monotonic()
 
+        self._signal_shutdown()
+
 ## Оптимизировать то, что снизу
     def preprocess(self, frame):
         # resize
@@ -139,6 +141,23 @@ class PreprocessWorker(multiprocessing.Process):
             pass
 
         return True
+
+    def _signal_shutdown(self):
+        try:
+            self.tensor_queue.put_nowait(None)
+            return
+        except queue.Full:
+            pass
+
+        try:
+            self.tensor_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            self.tensor_queue.put_nowait(None)
+        except queue.Full:
+            pass
     
     def stop(self):
         self.stop_evt.set()

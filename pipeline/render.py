@@ -160,6 +160,7 @@ class CameraView(QLabel):
 class VideoWall(QWidget):
     destroyed = Signal()
     roi_changed = Signal(int, object)
+    analytics_requested = Signal()
 
     def __init__(
         self,
@@ -203,6 +204,14 @@ class VideoWall(QWidget):
         self.metrics_toggle_button = QPushButton("Показать метрики")
         self.metrics_toggle_button.clicked.connect(self._toggle_metrics_panel)
         controls_layout.addWidget(self.metrics_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.analytics_button = QPushButton("Аналитика")
+        self.analytics_button.setProperty("variant", "secondary")
+        self.analytics_button.clicked.connect(self._request_analytics)
+        self.analytics_button.style().unpolish(self.analytics_button)
+        self.analytics_button.style().polish(self.analytics_button)
+        controls_layout.addWidget(self.analytics_button, 0, Qt.AlignmentFlag.AlignLeft)
+
         controls_layout.addStretch(1)
         root.addLayout(controls_layout)
 
@@ -225,13 +234,13 @@ class VideoWall(QWidget):
         self.labels = {}
 
         for idx, cam_id in enumerate(cam_ids):
-            lbl = CameraView(cam_id, roi_state)
-            lbl.roi_changed.connect(self._on_roi_changed)
-            self.labels[cam_id] = lbl
+            label = CameraView(cam_id, roi_state)
+            label.roi_changed.connect(self._on_roi_changed)
+            self.labels[cam_id] = label
 
             row = idx // cameras_per_row
             col = idx % cameras_per_row
-            layout.addWidget(lbl, row, col)
+            layout.addWidget(label, row, col)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_ui)
@@ -304,11 +313,11 @@ class VideoWall(QWidget):
         return panel
 
     def update_ui(self):
-        for cam_id, rq in self.render_queues.items():
+        for cam_id, render_queue in self.render_queues.items():
             packet = None
             while True:
                 try:
-                    packet = rq.get_nowait()
+                    packet = render_queue.get_nowait()
                 except queue.Empty:
                     break
 
@@ -317,9 +326,9 @@ class VideoWall(QWidget):
 
             frame = packet["frame"].image
             qimg = self.numpy_bgr_to_qimage(frame)
-            pix = QPixmap.fromImage(qimg)
-            self.last_frames[cam_id] = pix
-            self.labels[cam_id].setPixmap(pix)
+            pixmap = QPixmap.fromImage(qimg)
+            self.last_frames[cam_id] = pixmap
+            self.labels[cam_id].setPixmap(pixmap)
             self._update_display_metrics(cam_id)
 
     def _update_display_metrics(self, cam_id):
@@ -443,6 +452,9 @@ class VideoWall(QWidget):
         self.metrics_panel.show()
         self.metrics_toggle_button.setText("Скрыть метрики")
         self.refresh_metrics()
+
+    def _request_analytics(self):
+        self.analytics_requested.emit()
 
     def _on_roi_changed(self, cam_id, roi):
         self.roi_changed.emit(cam_id, roi)

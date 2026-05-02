@@ -35,11 +35,18 @@ class InferenceWorker(torch.multiprocessing.Process):
         device_ref = torch.device(self.device)
         last_report_at = time.monotonic()
 
-        while not self.stop_evt.is_set():
+        while True:
             try:
-                packet = self.tensors_queue.get() # Acquire FrameClasses and corresponding tensors
-            except:
+                packet = self.tensors_queue.get(timeout=0.1) # Acquire FrameClasses and corresponding tensors
+            except queue.Empty:
+                if self.stop_evt.is_set():
+                    break
                 continue
+            except Exception:
+                continue
+
+            if packet is None:
+                break
             # print("start inference", datetime.now())
             # start = datetime.now()
             # print([f"[IW] {packet["tensors"]}"])
@@ -101,6 +108,8 @@ class InferenceWorker(torch.multiprocessing.Process):
                 )
                 frames_since_report = 0
                 last_report_at = time.monotonic()
+
+        self._signal_shutdown()
 
     def load_yolo(self, model, device ="cuda:0"):
         from ultralytics import YOLO
@@ -174,8 +183,29 @@ class InferenceWorker(torch.multiprocessing.Process):
             "updated_at": now_iso(),
         }
 
+    def _signal_shutdown(self):
+        try:
+            self.result_queue.put_nowait(None)
+            return
+        except queue.Full:
+            pass
+
+        try:
+            self.result_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            self.result_queue.put_nowait(None)
+        except queue.Full:
+            pass
+
     def stop(self):
         self.stop_evt.set()
+        try:
+            self.tensors_queue.put_nowait(None)
+        except queue.Full:
+            pass
 
 
                 

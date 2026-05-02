@@ -1,7 +1,8 @@
+import os
 from datetime import datetime
 
 from PySide6.QtCore import QDateTime, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -10,7 +11,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -38,19 +41,19 @@ class BarChartWidget(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(219, 227, 239)))
-        painter.setBrush(QColor(255, 255, 255))
+        painter.setPen(QPen(QColor(36, 50, 68)))
+        painter.setBrush(QColor(17, 24, 39))
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 8, 8)
 
         left = 18
         top = 16
         right = self.width() - 18
 
-        painter.setPen(QPen(QColor(17, 24, 39)))
+        painter.setPen(QPen(QColor(241, 245, 249)))
         painter.drawText(left, top, right - left, 24, Qt.AlignmentFlag.AlignLeft, self.title)
 
         if not self.data:
-            painter.setPen(QPen(QColor(120, 120, 120)))
+            painter.setPen(QPen(QColor(148, 163, 184)))
             painter.drawText(
                 left,
                 top + 48,
@@ -78,7 +81,7 @@ class BarChartWidget(QWidget):
 
         for idx, (label, value) in enumerate(list(self.data.items())[:5]):
             y = chart_top + idx * row_height
-            painter.setPen(QPen(QColor(55, 55, 55)))
+            painter.setPen(QPen(QColor(226, 232, 240)))
             text = str(label)
             if len(text) > 18:
                 text = text[:17] + "..."
@@ -88,16 +91,54 @@ class BarChartWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(colors[idx % len(colors)])
             painter.drawRoundedRect(bar_left, y + 2, width, 16, 4, 4)
-            painter.setPen(QPen(QColor(70, 70, 70)))
+            painter.setPen(QPen(QColor(203, 213, 225)))
             painter.drawText(bar_left + width + 8, y, 36, 20, Qt.AlignmentFlag.AlignLeft, str(value))
 
         painter.end()
+
+
+class EventSnapshotWindow(QWidget):
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+
+        self.setWindowTitle(f"Кадр события - {os.path.basename(image_path)}")
+        self.resize(960, 640)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
+
+        path_label = QLabel(image_path)
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(path_label)
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.image_label)
+        root.addWidget(scroll_area, 1)
+
+        self._load_image()
+
+    def _load_image(self):
+        pixmap = QPixmap(self.image_path)
+        if pixmap.isNull():
+            self.image_label.setText("Не удалось открыть изображение.")
+            return
+
+        self.image_label.setPixmap(pixmap)
+        self.image_label.adjustSize()
 
 
 class DashboardWindow(QWidget):
     def __init__(self, dbworker):
         super().__init__()
         self.dbworker = dbworker
+        self.snapshot_windows = []
         self.setWindowTitle("Аналитический дашборд")
         self.resize(980, 680)
         self.setMinimumSize(900, 620)
@@ -186,6 +227,7 @@ class DashboardWindow(QWidget):
         ])
         self.events_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.events_table.horizontalHeader().setStretchLastSection(True)
+        self.events_table.cellClicked.connect(self._open_snapshot_from_row)
         root.addWidget(self.events_table)
 
     def _metric_label(self, value, caption):
@@ -244,7 +286,7 @@ class DashboardWindow(QWidget):
         self.events_table.setRowCount(len(events))
 
         for row, event in enumerate(events):
-            log_id, _, camera_name, location, start, stop, event_type, src = event
+            log_id, _, camera_name, location, start, stop, event_type, src, snapshot_path = event
             values = [
                 log_id,
                 camera_name,
@@ -258,6 +300,9 @@ class DashboardWindow(QWidget):
 
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value or ""))
+                item.setData(Qt.ItemDataRole.UserRole, snapshot_path)
+                if snapshot_path:
+                    item.setToolTip("Нажмите, чтобы открыть сохраненный кадр события")
                 if col == 5 and value:
                     self._apply_event_level_style(item, str(value))
                 self.events_table.setItem(row, col, item)
@@ -273,6 +318,32 @@ class DashboardWindow(QWidget):
         foreground = QColor("black") if background.lightness() > 150 else QColor("white")
         item.setBackground(background)
         item.setForeground(foreground)
+
+    def _open_snapshot_from_row(self, row, column):
+        item = self.events_table.item(row, 0)
+        if item is None:
+            return
+
+        snapshot_path = item.data(Qt.ItemDataRole.UserRole)
+        if not snapshot_path:
+            return
+
+        if not os.path.exists(snapshot_path):
+            QMessageBox.warning(
+                self,
+                "Кадр не найден",
+                f"Файл снимка не найден:\n{snapshot_path}",
+            )
+            return
+
+        window = EventSnapshotWindow(snapshot_path)
+        window.destroyed.connect(lambda *_: self._forget_snapshot_window(window))
+        self.snapshot_windows.append(window)
+        window.show()
+
+    def _forget_snapshot_window(self, window):
+        if window in self.snapshot_windows:
+            self.snapshot_windows.remove(window)
 
     def _duration_from_strings(self, start, stop):
         if not stop:

@@ -1,3 +1,4 @@
+import os
 from operator import mul
 
 from ultralytics import YOLO
@@ -14,6 +15,7 @@ from pipeline.postprocess import PostProcessWorker
 from pipeline.render import VideoWall
 from pipeline.dblogger import DBLogger
 from pipeline.runtime_metrics import init_metrics_state, mark_session_status
+from gui.dashboardWindow import DashboardWindow
 from gui.db_worker import DBWorker
 
 # Получить кадр с камеры
@@ -37,6 +39,7 @@ class VideoWallExec:
         self.DEVICE = DEVICE
         self.CLASSES = CLASSES
         self.wall = None
+        self.dashboard_window = None
         self.config_id, self.config_name, self.cameras_per_row, self.enabled, self.CONF_THRESH, self.fps = config
         self.dbworker = DBWorker(DB_PATH)
         
@@ -44,6 +47,9 @@ class VideoWallExec:
         self.cam_ids = [camera["id"] for camera in cameras]
         self.cam_workers = {}
         self.maxqsize = 2
+        self.snapshot_dir = os.path.abspath(
+            os.path.join(".", "db", "snapshots", f"config_{self.config_id}")
+        )
 
     def start_videowall(self):
         print("STARTING THE VIDEOWALL...")
@@ -110,6 +116,7 @@ class VideoWallExec:
             allowed_classes=self.CLASSES,
             roi_state=self.roi_state,
             metrics_state=self.metrics_state,
+            snapshot_dir=self.snapshot_dir,
         )
         
         dblogger = DBLogger(self.DB_PATH, log_queue_task)
@@ -125,6 +132,7 @@ class VideoWallExec:
             camera_names={camera["id"]: camera["name"] for camera in self.cameras},
         )
         self.wall.roi_changed.connect(self._save_roi)
+        self.wall.analytics_requested.connect(self._open_dashboard)
         self.wall.resize(1280, 480)
         
         self.wall.show()
@@ -169,6 +177,20 @@ class VideoWallExec:
 
     def _save_roi(self, cam_id, roi):
         self.dbworker.save_roi(self.config_id, cam_id, roi)
+
+    def _open_dashboard(self):
+        if self.dashboard_window is not None and self.dashboard_window.isVisible():
+            self.dashboard_window.refresh()
+            self.dashboard_window.raise_()
+            self.dashboard_window.activateWindow()
+            return
+
+        self.dashboard_window = DashboardWindow(self.dbworker)
+        self.dashboard_window.destroyed.connect(self._on_dashboard_closed)
+        self.dashboard_window.show()
+
+    def _on_dashboard_closed(self):
+        self.dashboard_window = None
         
     def form_rtsp_link(self, username, pwd, ip):
         link = f'rtsp://{username}:{pwd}@{ip}:554/Streaming/101'
