@@ -1,16 +1,23 @@
-from PySide6.QtWidgets import QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QTableWidgetItem
-from PySide6.QtCore import Slot
-
-from ui_build.mainconfigwindow_ui import Ui_main_config_window
+from PySide6.QtCore import QTimer, Slot
+from PySide6.QtWidgets import (
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 
 from gui.cameraManagerWindow import CameraManagerWindow
-from gui.redactConfigWindow import RedactConfigWindow
-from gui.modelManagerWindow import ModelManagerWindow
 from gui.dashboardWindow import DashboardWindow
-from videoWall import VideoWallExec
-from tables.mytable import MyTable
-
 from gui.db_worker import DBWorker
+from gui.modelManagerWindow import ModelManagerWindow
+from gui.redactConfigWindow import RedactConfigWindow
+from tables.mytable import MyTable
+from ui_build.mainconfigwindow_ui import Ui_main_config_window
+from videoWall import VideoWallExec
+
 
 class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def __init__(self):
@@ -19,6 +26,13 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         self.setMinimumSize(760, 520)
         self.db_path = "./db/logs.db"
         self.dbworker = DBWorker(self.db_path)
+        self.vw = None
+        self._allow_close = False
+        self._pending_app_exit = False
+        self._shutdown_poll_timer = QTimer(self)
+        self._shutdown_poll_timer.setInterval(150)
+        self._shutdown_poll_timer.timeout.connect(self._poll_videowall_shutdown)
+
         self._setup_header()
         self._setup_dashboard_button()
         self._setup_table()
@@ -50,20 +64,19 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def _load_config_table(self):
         configs = self.dbworker.fetch_all_configs()
         self._display_configs(configs)
-        
+
     def _setup_table(self):
         self.config_table = MyTable(show_videowall=True)
         self.config_table.add_requested.connect(self._on_add)
         self.config_table.edit_requested.connect(self._open_edit_window)
         self.config_table.delete_requested.connect(self._on_delete)
+
         temp_layout = QVBoxLayout()
         temp_layout.setContentsMargins(0, 0, 0, 0)
         self.config_table_groupbox.setLayout(temp_layout)
-        
         self.config_table_groupbox.layout().addWidget(self.config_table)
         self.config_table.table.cellDoubleClicked.connect(self._on_row_double_clicked)
-        # self.config_table.set_headers()
-    
+
     def _display_configs(self, configs):
         table = self.config_table.table
         table.setColumnCount(2)
@@ -72,34 +85,32 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        
-        for row, (id, name) in enumerate(configs):
-            config_id = id
-            name = name
+
+        for row, (config_id, name) in enumerate(configs):
             table.setItem(row, 0, QTableWidgetItem(str(config_id)))
             table.setItem(row, 1, QTableWidgetItem(name))
 
     @Slot()
     def _on_row_double_clicked(self, row, column):
+        del column
         table = self.config_table.table
-        item: QTableWidgetItem = table.item(row, 0)
-        config_id = int(item.text())
-
-        self._open_edit_window(config_id)
+        item = table.item(row, 0)
+        if item is None:
+            return
+        self._open_edit_window(int(item.text()))
 
     @Slot()
     def _on_camera_manage_button_clicked(self):
         self.cmw = CameraManagerWindow(self.dbworker)
         self.cmw.show()
-    
+
     @Slot()
     def _open_edit_window(self, config_id):
         data = self.dbworker.fetch_config_by_id(config_id)
-        # print(data)
         self.edit_window = RedactConfigWindow(config_id, data, self.dbworker)
         self.edit_window.config_changed.connect(self._load_config_table)
         self.edit_window.show()
-    
+
     def _on_add(self):
         self.edit_window = RedactConfigWindow(None, None, self.dbworker)
         self.edit_window.config_changed.connect(self._load_config_table)
@@ -111,16 +122,17 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
             self,
             "Удаление",
             f"Удалить конфиг {config_name}?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
         )
 
-        if reply == QMessageBox.Yes:
-            try:
-                self.dbworker.delete_config(config_id)
-                self._load_config_table()
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка удаления", str(e))
-        
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self.dbworker.delete_config(config_id)
+            self._load_config_table()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка удаления", str(exc))
 
     def _on_model_manage_button_clicked(self):
         self.mmw = ModelManagerWindow(self.dbworker)
@@ -131,33 +143,60 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         self.dashboard_window.show()
 
     def _run_video_wall(self, config_id):
-        data = self.dbworker.fetch_config_by_id(config_id)
-        # print(data)
-        # self.edit_window = RedactConfigWindow(config_id, data, self.dbworker)
         try:
+            self._pending_app_exit = False
             config = self.dbworker.fetch_config_by_id(config_id)[0]
             cameras = self.dbworker.fetch_cameras_by_id(config_id)
             classes = self.dbworker.fetch_classes_by_id(config_id)
             models = self.dbworker.get_models_by_id(classes)
-            # print(config)
-            # print(cameras)
+
             cameras_data = []
             for camera in cameras:
-                id, name, location, username, pwd, ip = camera
-                cameras_data.append({
-                    "id": id,
-                    "name": name,
-                    "location": location,
-                    "username": username,
-                    "pwd": pwd,
-                    "ip": ip
-                })
-            # print(classes)
-            # print(models)
-            self.close() 
-            
-            self.vw = VideoWallExec(cameras_data, models, config, self.db_path, classes)
-            self.vw.start_videowall()
+                cam_id, name, location, username, pwd, ip = camera
+                cameras_data.append(
+                    {
+                        "id": cam_id,
+                        "name": name,
+                        "location": location,
+                        "username": username,
+                        "pwd": pwd,
+                        "ip": ip,
+                    }
+                )
 
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            self.hide()
+            self.vw = VideoWallExec(
+                cameras_data,
+                models,
+                config,
+                self.db_path,
+                classes,
+                main_window=self,
+            )
+            self.vw.start_videowall()
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", str(exc))
+
+    def _poll_videowall_shutdown(self):
+        if self.vw is None or self.vw.is_shutdown_complete():
+            self._shutdown_poll_timer.stop()
+            self.vw = None
+            if self._pending_app_exit:
+                self._allow_close = True
+                self.close()
+
+    def closeEvent(self, event):
+        if self._allow_close:
+            event.accept()
+            return
+
+        if self.vw is not None and not self.vw.is_shutdown_complete():
+            self._pending_app_exit = True
+            self.hide()
+            self.vw.request_shutdown()
+            if not self._shutdown_poll_timer.isActive():
+                self._shutdown_poll_timer.start()
+            event.ignore()
+            return
+
+        event.accept()

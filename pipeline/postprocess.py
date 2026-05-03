@@ -216,9 +216,14 @@ class PostProcessWorker(multiprocessing.Process):
                     len(visible_tracks),
                     len(cam_active),
                 )
-                self.draw_tracks(frame.image, visible_tracks, frame_counters)
+                self.draw_tracks(frame.image, visible_tracks)
                 try:
-                    self.out_queues[cam_id].put_nowait({"frame": frame})
+                    self.out_queues[cam_id].put_nowait(
+                        {
+                            "frame": frame,
+                            "counters": dict(frame_counters or {}),
+                        }
+                    )
                 except queue.Full:
                     camera_stats[cam_id]["queue_drops"] += 1
 
@@ -353,7 +358,7 @@ class PostProcessWorker(multiprocessing.Process):
         roi_x1, roi_y1, roi_x2, roi_y2 = roi_rect
         return roi_x1 <= center_x <= roi_x2 and roi_y1 <= center_y <= roi_y2
 
-    def draw_tracks(self, frame, tracks, frame_counters):
+    def draw_tracks(self, frame, tracks):
         for track in tracks:
             x1, y1, x2, y2 = map(int, track.to_ltrb())
             track_id = track.track_id
@@ -371,31 +376,6 @@ class PostProcessWorker(multiprocessing.Process):
                 color,
                 1,
             )
-
-        h, _ = frame.shape[:2]
-        if self.counters_enabled and frame_counters:
-            y_offset = h - 10
-
-            for cls_name, count in frame_counters.items():
-                text = f"{cls_name}: {count}"
-                (_, text_h), _ = cv2.getTextSize(
-                    text,
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    2,
-                )
-
-                cv2.putText(
-                    frame,
-                    text,
-                    (10, y_offset),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-
-                y_offset -= text_h + 10
 
     def _track_color(self, cls_name):
         danger_level = self.class_danger_levels.get(cls_name, "safe")

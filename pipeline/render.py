@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from pipeline.runtime_metrics import (
+    DISPLAY_KEY,
     INFERENCE_KEY,
     POSTPROCESS_KEY,
     PREPROCESS_KEY,
@@ -157,10 +158,43 @@ class CameraView(QLabel):
         return QPoint(x, y)
 
 
+class CameraTile(QWidget):
+    def __init__(self, cam_id, roi_state, camera_name):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        title = QLabel(camera_name)
+        title.setObjectName("cameraTileTitle")
+        layout.addWidget(title)
+
+        self.view = CameraView(cam_id, roi_state)
+        layout.addWidget(self.view, 1)
+
+        self.counters_label = QLabel("Объекты: нет")
+        self.counters_label.setObjectName("cameraCounters")
+        self.counters_label.setWordWrap(True)
+        self.counters_label.setMinimumHeight(34)
+        layout.addWidget(self.counters_label)
+
+    def set_counters(self, counters):
+        if not counters:
+            self.counters_label.setText("Объекты: нет")
+            return
+
+        parts = [
+            f"{cls_name}: {count}"
+            for cls_name, count in sorted(counters.items())
+        ]
+        self.counters_label.setText("Объекты: " + " | ".join(parts))
+
+
 class VideoWall(QWidget):
-    destroyed = Signal()
+    closing = Signal()
     roi_changed = Signal(int, object)
     analytics_requested = Signal()
+    main_window_requested = Signal()
 
     def __init__(
         self,
@@ -173,6 +207,8 @@ class VideoWall(QWidget):
         camera_names=None,
     ):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._is_closing = False
 
         self.cam_ids = cam_ids
         self.render_queues = render_queues
@@ -183,14 +219,30 @@ class VideoWall(QWidget):
             for cam_id in cam_ids
         }
         self.last_frames = {cam_id: None for cam_id in cam_ids}
+        self.last_counters = {cam_id: {} for cam_id in cam_ids}
         self.display_stats = {
             cam_id: {
                 "frames_total": 0,
                 "frames_since_report": 0,
                 "fps": 0.0,
+                "last_render_ms": 0.0,
+                "render_ms_sum": 0.0,
+                "last_latency_ms": 0.0,
+                "latency_ms_sum": 0.0,
+                "max_latency_ms": 0.0,
                 "last_report_at": time.monotonic(),
             }
             for cam_id in cam_ids
+        }
+        self.display_global_stats = {
+            "frames_total": 0,
+            "frames_since_report": 0,
+            "last_render_ms": 0.0,
+            "render_ms_sum": 0.0,
+            "last_latency_ms": 0.0,
+            "latency_ms_sum": 0.0,
+            "max_latency_ms": 0.0,
+            "last_report_at": time.monotonic(),
         }
 
         root = QVBoxLayout(self)
@@ -212,6 +264,13 @@ class VideoWall(QWidget):
         self.analytics_button.style().polish(self.analytics_button)
         controls_layout.addWidget(self.analytics_button, 0, Qt.AlignmentFlag.AlignLeft)
 
+        self.main_window_button = QPushButton("В главное окно")
+        self.main_window_button.setProperty("variant", "secondary")
+        self.main_window_button.clicked.connect(self._request_main_window)
+        self.main_window_button.style().unpolish(self.main_window_button)
+        self.main_window_button.style().polish(self.main_window_button)
+        controls_layout.addWidget(self.main_window_button, 0, Qt.AlignmentFlag.AlignLeft)
+
         controls_layout.addStretch(1)
         root.addLayout(controls_layout)
 
@@ -232,15 +291,22 @@ class VideoWall(QWidget):
         content_layout.addWidget(self.metrics_panel, 0)
 
         self.labels = {}
+        self.camera_tiles = {}
 
         for idx, cam_id in enumerate(cam_ids):
-            label = CameraView(cam_id, roi_state)
+            tile = CameraTile(
+                cam_id,
+                roi_state,
+                self.camera_names.get(cam_id, f"Camera {cam_id}"),
+            )
+            label = tile.view
             label.roi_changed.connect(self._on_roi_changed)
             self.labels[cam_id] = label
+            self.camera_tiles[cam_id] = tile
 
             row = idx // cameras_per_row
             col = idx % cameras_per_row
-            layout.addWidget(label, row, col)
+            layout.addWidget(tile, row, col)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_ui)
@@ -254,8 +320,8 @@ class VideoWall(QWidget):
 
     def _build_metrics_panel(self):
         panel = QWidget()
-        panel.setMinimumWidth(360)
-        panel.setMaximumWidth(420)
+        panel.setMinimumWidth(430)
+        panel.setMaximumWidth(520)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -266,24 +332,27 @@ class VideoWall(QWidget):
         summary_grid.setSpacing(8)
 
         self.session_value = QLabel("-")
-        self.pipeline_value = QLabel("-")
         self.batch_value = QLabel("-")
+        self.pipeline_value = QLabel("-")
+        self.latency_value = QLabel("-")
         self.gpu_value = QLabel("-")
         self.drops_value = QLabel("-")
         self.tracks_value = QLabel("-")
 
         summary_grid.addWidget(QLabel("Сессия"), 0, 0)
         summary_grid.addWidget(self.session_value, 0, 1)
-        summary_grid.addWidget(QLabel("Пайплайн"), 1, 0)
-        summary_grid.addWidget(self.pipeline_value, 1, 1)
-        summary_grid.addWidget(QLabel("Батчи"), 2, 0)
-        summary_grid.addWidget(self.batch_value, 2, 1)
-        summary_grid.addWidget(QLabel("GPU"), 3, 0)
-        summary_grid.addWidget(self.gpu_value, 3, 1)
-        summary_grid.addWidget(QLabel("Дропы"), 4, 0)
-        summary_grid.addWidget(self.drops_value, 4, 1)
-        summary_grid.addWidget(QLabel("Треки"), 5, 0)
-        summary_grid.addWidget(self.tracks_value, 5, 1)
+        summary_grid.addWidget(QLabel("Батчи"), 1, 0)
+        summary_grid.addWidget(self.batch_value, 1, 1)
+        summary_grid.addWidget(QLabel("Этапы, мс"), 2, 0)
+        summary_grid.addWidget(self.pipeline_value, 2, 1)
+        summary_grid.addWidget(QLabel("Задержка"), 3, 0)
+        summary_grid.addWidget(self.latency_value, 3, 1)
+        summary_grid.addWidget(QLabel("GPU"), 4, 0)
+        summary_grid.addWidget(self.gpu_value, 4, 1)
+        summary_grid.addWidget(QLabel("Дропы"), 5, 0)
+        summary_grid.addWidget(self.drops_value, 5, 1)
+        summary_grid.addWidget(QLabel("Треки"), 6, 0)
+        summary_grid.addWidget(self.tracks_value, 6, 1)
 
         layout.addWidget(summary_box)
 
@@ -296,9 +365,9 @@ class VideoWall(QWidget):
             "In FPS",
             "Out FPS",
             "UI FPS",
-            "In drops",
-            "Out drops",
-            "Read err",
+            "UI ms",
+            "Latency",
+            "Drops",
             "Tracks",
         ])
         header = self.metrics_table.horizontalHeader()
@@ -324,36 +393,94 @@ class VideoWall(QWidget):
             if packet is None:
                 continue
 
-            frame = packet["frame"].image
+            if isinstance(packet, dict):
+                frame_obj = packet["frame"]
+                counters = dict(packet.get("counters") or {})
+            else:
+                frame_obj = packet
+                counters = {}
+
+            render_started_at = time.perf_counter()
+            frame = frame_obj.image
             qimg = self.numpy_bgr_to_qimage(frame)
             pixmap = QPixmap.fromImage(qimg)
             self.last_frames[cam_id] = pixmap
+            self.last_counters[cam_id] = counters
             self.labels[cam_id].setPixmap(pixmap)
-            self._update_display_metrics(cam_id)
+            self.camera_tiles[cam_id].set_counters(counters)
 
-    def _update_display_metrics(self, cam_id):
+            render_ms = (time.perf_counter() - render_started_at) * 1000.0
+            latency_ms = 0.0
+            captured_at_monotonic = getattr(frame_obj, "captured_at_monotonic", None)
+            if captured_at_monotonic is not None:
+                latency_ms = max(0.0, (time.monotonic() - captured_at_monotonic) * 1000.0)
+            self._update_display_metrics(cam_id, render_ms, latency_ms)
+
+    def _update_display_metrics(self, cam_id, render_ms, latency_ms):
         if self.metrics_state is None:
             return
 
         stats = self.display_stats[cam_id]
         stats["frames_total"] += 1
         stats["frames_since_report"] += 1
+        stats["last_render_ms"] = render_ms
+        stats["render_ms_sum"] += render_ms
+        stats["last_latency_ms"] = latency_ms
+        stats["latency_ms_sum"] += latency_ms
+        stats["max_latency_ms"] = max(stats["max_latency_ms"], latency_ms)
+
+        global_stats = self.display_global_stats
+        global_stats["frames_total"] += 1
+        global_stats["frames_since_report"] += 1
+        global_stats["last_render_ms"] = render_ms
+        global_stats["render_ms_sum"] += render_ms
+        global_stats["last_latency_ms"] = latency_ms
+        global_stats["latency_ms_sum"] += latency_ms
+        global_stats["max_latency_ms"] = max(global_stats["max_latency_ms"], latency_ms)
 
         now_monotonic = time.monotonic()
         report_interval = now_monotonic - stats["last_report_at"]
+        if report_interval >= 1.0:
+            stats["fps"] = stats["frames_since_report"] / max(report_interval, 1e-6)
+            self.metrics_state[display_key(cam_id)] = {
+                "camera_id": cam_id,
+                "camera_name": self.camera_names.get(cam_id, f"Camera {cam_id}"),
+                "fps": round(stats["fps"], 2),
+                "frames_total": stats["frames_total"],
+                "last_render_ms": round(stats["last_render_ms"], 2),
+                "avg_render_ms": round(stats["render_ms_sum"] / max(stats["frames_total"], 1), 2),
+                "last_latency_ms": round(stats["last_latency_ms"], 2),
+                "avg_latency_ms": round(stats["latency_ms_sum"] / max(stats["frames_total"], 1), 2),
+                "max_latency_ms": round(stats["max_latency_ms"], 2),
+                "updated_at": now_iso(),
+            }
+            stats["frames_since_report"] = 0
+            stats["last_report_at"] = now_monotonic
+
+        self._maybe_publish_global_display_metrics(now_monotonic)
+
+    def _maybe_publish_global_display_metrics(self, now_monotonic):
+        if self.metrics_state is None:
+            return
+
+        global_stats = self.display_global_stats
+        report_interval = now_monotonic - global_stats["last_report_at"]
         if report_interval < 1.0:
             return
 
-        stats["fps"] = stats["frames_since_report"] / max(report_interval, 1e-6)
-        self.metrics_state[display_key(cam_id)] = {
-            "camera_id": cam_id,
-            "camera_name": self.camera_names.get(cam_id, f"Camera {cam_id}"),
-            "fps": round(stats["fps"], 2),
-            "frames_total": stats["frames_total"],
+        fps = global_stats["frames_since_report"] / max(report_interval, 1e-6)
+        self.metrics_state[DISPLAY_KEY] = {
+            "frames_total": global_stats["frames_total"],
+            "last_render_ms": round(global_stats["last_render_ms"], 2),
+            "avg_render_ms": round(global_stats["render_ms_sum"] / max(global_stats["frames_total"], 1), 2),
+            "last_latency_ms": round(global_stats["last_latency_ms"], 2),
+            "avg_latency_ms": round(global_stats["latency_ms_sum"] / max(global_stats["frames_total"], 1), 2),
+            "max_latency_ms": round(global_stats["max_latency_ms"], 2),
+            "fps": round(fps, 2),
             "updated_at": now_iso(),
         }
-        stats["frames_since_report"] = 0
-        stats["last_report_at"] = now_monotonic
+        global_stats["frames_since_report"] = 0
+        global_stats["last_report_at"] = now_monotonic
 
     def refresh_metrics(self):
         if self.metrics_state is None:
@@ -363,6 +490,7 @@ class VideoWall(QWidget):
         preprocess = dict(self.metrics_state.get(PREPROCESS_KEY, {}))
         inference = dict(self.metrics_state.get(INFERENCE_KEY, {}))
         postprocess = dict(self.metrics_state.get(POSTPROCESS_KEY, {}))
+        display_global = dict(self.metrics_state.get(DISPLAY_KEY, {}))
 
         capture_metrics = {
             cam_id: dict(self.metrics_state.get(capture_key(cam_id), {}))
@@ -390,17 +518,23 @@ class VideoWall(QWidget):
             f"\nМоделей: {session.get('model_count', 0)}"
             f"\nTarget FPS: {session.get('target_fps', 0)}"
         )
-        self.pipeline_value.setText(
-            f"Capture: {total_capture_fps:.1f}"
-            f"\nPre: {preprocess.get('fps', 0.0):.1f}"
-            f"\nInfer: {inference.get('fps', 0.0):.1f}"
-            f"\nPost/UI: {postprocess.get('fps', 0.0):.1f}/{total_display_fps:.1f}"
-        )
         self.batch_value.setText(
             f"Cfg: {session.get('configured_batch_size', 0)}"
             f"\nLast: {preprocess.get('last_batch_size', 0)}"
             f"\nAvg: {preprocess.get('avg_batch_size', 0.0)}"
-            f"\nInfer ms: {inference.get('last_inference_ms', 0.0)}"
+            f"\nFrames: {display_global.get('frames_total', 0)}"
+        )
+        self.pipeline_value.setText(
+            f"Pre: {preprocess.get('last_batch_ms', 0.0)} / {preprocess.get('avg_batch_ms', 0.0)}"
+            f"\nInfer: {inference.get('last_inference_ms', 0.0)} / {inference.get('avg_inference_ms', 0.0)}"
+            f"\nPost: {postprocess.get('last_packet_ms', 0.0)} / {postprocess.get('avg_packet_ms', 0.0)}"
+            f"\nUI: {display_global.get('last_render_ms', 0.0)} / {display_global.get('avg_render_ms', 0.0)}"
+        )
+        self.latency_value.setText(
+            f"Last: {display_global.get('last_latency_ms', 0.0)} ms"
+            f"\nAvg: {display_global.get('avg_latency_ms', 0.0)} ms"
+            f"\nMax: {display_global.get('max_latency_ms', 0.0)} ms"
+            f"\nUI FPS: {total_display_fps:.1f}"
         )
         self.gpu_value.setText(
             f"Alloc: {inference.get('gpu_allocated_mb', 0.0)} MB"
@@ -417,7 +551,7 @@ class VideoWall(QWidget):
             f"Visible: {postprocess.get('visible_tracks', 0)}"
             f"\nActive: {postprocess.get('active_tracks', 0)}"
             f"\nRead err: {total_read_errors}"
-            f"\nOut FPS: {total_output_fps:.1f}"
+            f"\nCapture/Out FPS: {total_capture_fps:.1f}/{total_output_fps:.1f}"
         )
 
         self._fill_camera_metrics_table(capture_metrics, output_metrics, display_metrics)
@@ -435,9 +569,9 @@ class VideoWall(QWidget):
                 f"{capture.get('fps', 0.0):.1f}",
                 f"{output.get('fps', 0.0):.1f}",
                 f"{display.get('fps', 0.0):.1f}",
-                str(capture.get("queue_drops", 0)),
-                str(output.get("queue_drops", 0)),
-                str(capture.get("read_errors", 0)),
+                f"{display.get('last_render_ms', 0.0):.1f}",
+                f"{display.get('last_latency_ms', 0.0):.1f}",
+                f"{capture.get('queue_drops', 0)}/{output.get('queue_drops', 0)}",
                 str(output.get("active_tracks", 0)),
             ]
             for col, value in enumerate(values):
@@ -456,6 +590,9 @@ class VideoWall(QWidget):
     def _request_analytics(self):
         self.analytics_requested.emit()
 
+    def _request_main_window(self):
+        self.main_window_requested.emit()
+
     def _on_roi_changed(self, cam_id, roi):
         self.roi_changed.emit(cam_id, roi)
 
@@ -473,6 +610,16 @@ class VideoWall(QWidget):
         )
 
     def closeEvent(self, event):
+        if self._is_closing:
+            event.accept()
+            return
+
+        self._is_closing = True
         print("Window closing")
-        self.destroyed.emit()
+        self.timer.stop()
+        self.metrics_timer.stop()
+        self.metrics_state = None
+        self.roi_state = {}
+        self.render_queues = {}
+        self.closing.emit()
         event.accept()

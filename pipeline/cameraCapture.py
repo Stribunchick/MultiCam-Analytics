@@ -9,18 +9,20 @@ from pipeline.frameClass import Frame
 
 class CameraCapture(threading.Thread):
     def __init__(self, camera_path, to_process_queue, cam_id, fps, metrics_state=None):
-        super().__init__()
+        super().__init__(daemon=True)
         self.camera_path = camera_path
         self.stop_evt = threading.Event()
         self.to_process_queue = to_process_queue
         self.cam_id = cam_id
         self.fps = fps
         self.metrics_state = metrics_state
+        self.cap = None
         print(f"CAMERACAPTURE [{cam_id}] INIT")
         
         
     def run(self):
-        cap = cv2.VideoCapture(self.camera_path, cv2.CAP_FFMPEG)
+        self.cap = cv2.VideoCapture(self.camera_path, cv2.CAP_FFMPEG)
+        cap = self.cap
         
         frame_interval = 1.0 / self.fps
         last_emit = 0
@@ -31,7 +33,37 @@ class CameraCapture(threading.Thread):
         last_report_at = time.monotonic()
 
         while not self.stop_evt.is_set():
-            ok, frame = cap.read() # Get the image
+            try:
+                ok, frame = cap.read() # Get the image
+            except cv2.error:
+                if self.stop_evt.is_set():
+                    break
+                read_errors += 1
+                self._maybe_publish_metrics(
+                    emitted_frames_total,
+                    queue_drops,
+                    read_errors,
+                    emitted_since_report,
+                    last_emit,
+                    last_report_at,
+                )
+                time.sleep(0.02)
+                continue
+            except Exception:
+                if self.stop_evt.is_set():
+                    break
+                read_errors += 1
+                self._maybe_publish_metrics(
+                    emitted_frames_total,
+                    queue_drops,
+                    read_errors,
+                    emitted_since_report,
+                    last_emit,
+                    last_report_at,
+                )
+                time.sleep(0.02)
+                continue
+
             if not ok:
                 read_errors += 1
                 self._maybe_publish_metrics(
@@ -73,7 +105,11 @@ class CameraCapture(threading.Thread):
                 emitted_since_report = 0
                 last_report_at = time.monotonic()
 
-        cap.release()
+        try:
+            cap.release()
+        except Exception:
+            pass
+        self.cap = None
 
     def _put_latest_packet(self, packet):
         try:
@@ -134,4 +170,10 @@ class CameraCapture(threading.Thread):
 
     def stop(self):
         self.stop_evt.set()
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
             

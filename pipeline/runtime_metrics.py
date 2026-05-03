@@ -5,6 +5,7 @@ SESSION_KEY = "session"
 PREPROCESS_KEY = "preprocess"
 INFERENCE_KEY = "inference"
 POSTPROCESS_KEY = "postprocess"
+DISPLAY_KEY = "display"
 
 
 def capture_key(cam_id):
@@ -70,6 +71,17 @@ def init_metrics_state(metrics_state, cameras, models, target_fps, configured_ba
         "updated_at": now_iso(),
     }
 
+    metrics_state[DISPLAY_KEY] = {
+        "frames_total": 0,
+        "last_render_ms": 0.0,
+        "avg_render_ms": 0.0,
+        "last_latency_ms": 0.0,
+        "avg_latency_ms": 0.0,
+        "max_latency_ms": 0.0,
+        "fps": 0.0,
+        "updated_at": now_iso(),
+    }
+
     for camera in cameras:
         cam_id = camera["id"]
         camera_name = camera.get("name") or f"Camera {cam_id}"
@@ -98,6 +110,11 @@ def init_metrics_state(metrics_state, cameras, models, target_fps, configured_ba
             "camera_name": camera_name,
             "fps": 0.0,
             "frames_total": 0,
+            "last_render_ms": 0.0,
+            "avg_render_ms": 0.0,
+            "last_latency_ms": 0.0,
+            "avg_latency_ms": 0.0,
+            "max_latency_ms": 0.0,
             "updated_at": now_iso(),
         }
 
