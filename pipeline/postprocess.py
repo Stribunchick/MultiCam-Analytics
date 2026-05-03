@@ -172,18 +172,21 @@ class PostProcessWorker(multiprocessing.Process):
 
                     track_state = cam_active.get(track_id)
                     if track_state is not None and track_state["class_name"] != cls_name:
-                        self._finish_alert(track_state, timestamp)
+                        self._finish_event(track_state, timestamp)
                         del cam_active[track_id]
                         track_state = None
 
                     if track_state is None:
+                        log_id = f"{cam_id}:{track_id}:{timestamp}"
                         track_state = {
                             "class_name": cls_name,
                             "first_seen_monotonic": time.monotonic(),
                             "alert_started": False,
-                            "log_id": None,
+                            "log_id": log_id,
+                            "snapshot_path": None,
                         }
                         cam_active[track_id] = track_state
+                        self._start_event(log_id, timestamp, cam_id, cls_name)
 
                     if not self._alert_enabled(cls_name):
                         continue
@@ -194,26 +197,15 @@ class PostProcessWorker(multiprocessing.Process):
                     if (time.monotonic() - track_state["first_seen_monotonic"]) < self._alert_delay_sec(cls_name):
                         continue
 
-                    log_id = f"{cam_id}:{track_id}:{timestamp}"
                     snapshot_path = self._save_alert_snapshot(frame.image, track, cam_id, cls_name, timestamp)
-                    track_state["log_id"] = log_id
                     track_state["alert_started"] = True
                     track_state["snapshot_path"] = snapshot_path
-                    self.log_task_queue.put_nowait(
-                        {
-                            "action": "start",
-                            "id": log_id,
-                            "datetimeStart": timestamp,
-                            "cam_id": cam_id,
-                            "event_type": cls_name,
-                            "src": "test",
-                            "snapshot_path": snapshot_path,
-                        }
-                    )
+                    if snapshot_path:
+                        self._attach_snapshot(track_state["log_id"], snapshot_path)
 
                 lost_ids = set(cam_active.keys()) - current_active
                 for track_id in lost_ids:
-                    self._finish_alert(cam_active[track_id], timestamp)
+                    self._finish_event(cam_active[track_id], timestamp)
                     del cam_active[track_id]
 
                 packet_visible_tracks += len(visible_tracks)
@@ -270,9 +262,31 @@ class PostProcessWorker(multiprocessing.Process):
             return 0.0
         return max(0.0, float(settings.get("alert_delay_sec", 0.0)))
 
-    def _finish_alert(self, track_state, timestamp):
+    def _start_event(self, log_id, timestamp, cam_id, cls_name):
+        self.log_task_queue.put_nowait(
+            {
+                "action": "start",
+                "id": log_id,
+                "datetimeStart": timestamp,
+                "cam_id": cam_id,
+                "event_type": cls_name,
+                "src": "test",
+                "snapshot_path": None,
+            }
+        )
+
+    def _attach_snapshot(self, log_id, snapshot_path):
+        self.log_task_queue.put_nowait(
+            {
+                "action": "snapshot",
+                "log_id": log_id,
+                "snapshot_path": snapshot_path,
+            }
+        )
+
+    def _finish_event(self, track_state, timestamp):
         log_id = track_state.get("log_id")
-        if not track_state.get("alert_started") or not log_id:
+        if not log_id:
             return
 
         self.log_task_queue.put_nowait(
@@ -286,7 +300,7 @@ class PostProcessWorker(multiprocessing.Process):
     def _close_all_active_tracks(self, timestamp):
         for cam_tracks in self.active_tracks.values():
             for track_state in list(cam_tracks.values()):
-                self._finish_alert(track_state, timestamp)
+                self._finish_event(track_state, timestamp)
             cam_tracks.clear()
 
     @staticmethod

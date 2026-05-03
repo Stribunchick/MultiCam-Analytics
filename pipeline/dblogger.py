@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS logs(
             WHERE id = ?
         """, (dt_stop, log_id))
 
+    def snapshot_action(self, log_id, snapshot_path):
+        self.cursor.execute("""
+            UPDATE logs
+            SET snapshot_path = ?
+            WHERE id = ?
+        """, (snapshot_path, log_id))
+
     def run(self):
         self.conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
         self._configure_connection(self.conn)
@@ -96,6 +103,11 @@ CREATE TABLE IF NOT EXISTS logs(
                     task["datetimeStart"],
                     task["event_type"],
                     task["src"],
+                    task.get("snapshot_path"),
+                )
+            elif action == "snapshot":
+                self.snapshot_action(
+                    task["log_id"],
                     task.get("snapshot_path"),
                 )
             elif action == "end":

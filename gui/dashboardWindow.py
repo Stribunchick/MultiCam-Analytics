@@ -139,6 +139,7 @@ class DashboardWindow(QWidget):
         super().__init__()
         self.dbworker = dbworker
         self.snapshot_windows = []
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle("Аналитический дашборд")
         self.resize(980, 680)
         self.setMinimumSize(900, 620)

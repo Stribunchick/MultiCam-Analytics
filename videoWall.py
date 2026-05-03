@@ -40,6 +40,7 @@ class VideoWallExec:
         self.CLASSES = CLASSES
         self.wall = None
         self.dashboard_window = None
+        self.dashboard_window_token = None
         self.config_id, self.config_name, self.cameras_per_row, self.enabled, self.CONF_THRESH, self.fps = config
         self.dbworker = DBWorker(DB_PATH)
         
@@ -179,18 +180,31 @@ class VideoWallExec:
         self.dbworker.save_roi(self.config_id, cam_id, roi)
 
     def _open_dashboard(self):
-        if self.dashboard_window is not None and self.dashboard_window.isVisible():
-            self.dashboard_window.refresh()
-            self.dashboard_window.raise_()
-            self.dashboard_window.activateWindow()
-            return
+        if self.dashboard_window is not None:
+            try:
+                if self.dashboard_window.isVisible():
+                    self.dashboard_window.refresh()
+                    self.dashboard_window.raise_()
+                    self.dashboard_window.activateWindow()
+                    return
+            except RuntimeError:
+                self.dashboard_window = None
+                self.dashboard_window_token = None
 
-        self.dashboard_window = DashboardWindow(self.dbworker)
-        self.dashboard_window.destroyed.connect(self._on_dashboard_closed)
-        self.dashboard_window.show()
+        window_token = object()
+        window = DashboardWindow(self.dbworker)
+        window.destroyed.connect(
+            lambda *_args, token=window_token: self._on_dashboard_closed(token)
+        )
+        window.show()
 
-    def _on_dashboard_closed(self):
-        self.dashboard_window = None
+        self.dashboard_window = window
+        self.dashboard_window_token = window_token
+
+    def _on_dashboard_closed(self, token=None):
+        if token is None or token is self.dashboard_window_token:
+            self.dashboard_window = None
+            self.dashboard_window_token = None
         
     def form_rtsp_link(self, username, pwd, ip):
         link = f'rtsp://{username}:{pwd}@{ip}:554/Streaming/101'
