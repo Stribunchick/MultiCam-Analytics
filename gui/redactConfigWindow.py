@@ -17,6 +17,8 @@ class RedactConfigWindow(QWidget, Ui_redact_config_window):
         
         super().__init__()
         self.setupUi(self)
+        self.resize(760, 560)
+        self.setMinimumSize(760, 560)
         self.config_id = config_id
         self.dbworker = dbworker
         self.connect_signals()
@@ -28,8 +30,8 @@ class RedactConfigWindow(QWidget, Ui_redact_config_window):
         self.cancel_button.clicked.connect(self._close_window)
         self.transfer_selected_cameras_right.clicked.connect(self._move_cameras_to_active)
         self.transfer_selected_cameras_left.clicked.connect(self._move_cameras_to_inactive)
-        self.transfer_selected_classes_right.clicked.connect(self._move_classes_to_active)
-        self.transfer_selected_classes_left.clicked.connect(self._move_classes_to_inactive)
+        self.transfer_selected_classes_left.clicked.connect(self._move_classes_to_active)
+        self.transfer_selected_classes_right.clicked.connect(self._move_classes_to_inactive)
     
     def get_data_by_config_id(self):
         config = self.dbworker.get_config_by_id(self.config_id)

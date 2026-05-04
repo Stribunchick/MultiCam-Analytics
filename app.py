@@ -5,6 +5,7 @@ import sys
 
 if __name__ == "__main__":
     app = QApplication()
+    app.setQuitOnLastWindowClosed(False)
     apply_theme(app)
     w = ConfigMainWindow()
     w.show()

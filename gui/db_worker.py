@@ -448,6 +448,7 @@ class DBWorker:
         end_dt=None,
         camera_id=None,
         event_type=None,
+        source_type=None,
         limit=None,
     ):
         query = """
@@ -479,6 +480,12 @@ class DBWorker:
         if event_type:
             query += " AND l.event_type = ?"
             params.append(event_type)
+        if source_type == "alert":
+            query += " AND l.src = ?"
+            params.append("alert")
+        elif source_type == "event":
+            query += " AND COALESCE(l.src, '') <> ?"
+            params.append("alert")
 
         query += " ORDER BY l.datetimeStart DESC"
 
@@ -507,12 +514,13 @@ class DBWorker:
         """)
         return {name: danger_level for name, danger_level in self.cur.fetchall()}
 
-    def fetch_dashboard_snapshot(self, start_dt=None, end_dt=None, camera_id=None, event_type=None):
+    def fetch_dashboard_snapshot(self, start_dt=None, end_dt=None, camera_id=None, event_type=None, source_type=None):
         events = self.fetch_dashboard_events(
             start_dt=start_dt,
             end_dt=end_dt,
             camera_id=camera_id,
             event_type=event_type,
+            source_type=source_type,
             limit=None,
         )
 
@@ -523,7 +531,7 @@ class DBWorker:
 
         for _, cam_id, camera_name, location, dt_start, dt_stop, etype, _, _ in events:
             etype = etype or "unknown"
-            camera_label = camera_name or f"Camera {cam_id}"
+            camera_label = camera_name or f"Камера {cam_id}"
             if location:
                 camera_label = f"{camera_label} ({location})"
 

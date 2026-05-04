@@ -46,6 +46,7 @@ class VideoWallExec:
         self.dashboard_window = None
         self.dashboard_window_token = None
         self._stopping = False
+        self._show_main_after_shutdown = False
         self._stop_thread = None
         self._stopped_evt = threading.Event()
         self._stopped_evt.set()
@@ -105,6 +106,8 @@ class VideoWallExec:
         tensor_queue = None
         result_queue = None
         log_queue_task = None
+        alert_queue = None
+        alert_decisions = None
 
         if processing_enabled:
             tensor_queue = multiprocessing.Queue(self.maxqsize)
@@ -127,6 +130,8 @@ class VideoWallExec:
 
             out_queues = {cam_id: multiprocessing.Queue(self.maxqsize) for cam_id in self.cam_ids}
             log_queue_task = multiprocessing.Queue()
+            alert_queue = multiprocessing.Queue()
+            alert_decisions = self.roi_manager.dict()
             postpw = PostProcessWorker(
                 result_queue,
                 out_queues,
@@ -137,6 +142,8 @@ class VideoWallExec:
                 roi_state=self.roi_state,
                 metrics_state=self.metrics_state,
                 snapshot_dir=self.snapshot_dir,
+                alert_queue=alert_queue,
+                alert_decisions=alert_decisions,
             )
 
             dblogger = DBLogger(self.DB_PATH, log_queue_task)
@@ -151,12 +158,22 @@ class VideoWallExec:
             cameras_per_row=self.cameras_per_row,
             fps=self.fps,
             metrics_state=self.metrics_state,
-            camera_names={camera["id"]: camera["name"] for camera in self.cameras},
+            camera_names={
+                camera["id"]: self._format_camera_title(camera)
+                for camera in self.cameras
+            },
+            alert_queue=alert_queue,
+            alert_decisions=alert_decisions,
+            class_danger_levels={
+                cls[1]: cls[3]
+                for cls in self.CLASSES
+                if len(cls) > 3
+            },
         )
         self.wall.roi_changed.connect(self._save_roi)
         self.wall.analytics_requested.connect(self._open_dashboard)
         self.wall.main_window_requested.connect(self._return_to_main_window)
-        self.wall.resize(1280, 480)
+        self.wall.resize(*self.wall.recommended_size())
         
         self.wall.show()
         
@@ -179,7 +196,7 @@ class VideoWallExec:
                 for cc in self.cam_workers.values():
                     cc.stop()
                 for cc in self.cam_workers.values():
-                    cc.join(timeout=1.5)
+                    cc.join(timeout=3.0)
 
                 if prepw is not None:
                     prepw.stop()
@@ -219,7 +236,7 @@ class VideoWallExec:
                             oq.join_thread()
                         except Exception:
                             pass
-                    for q in (tensor_queue, result_queue, log_queue_task):
+                    for q in (tensor_queue, result_queue, log_queue_task, alert_queue):
                         if q is None:
                             continue
                         try:
@@ -253,13 +270,34 @@ class VideoWallExec:
                     pass
                 self.dashboard_window = None
                 self.dashboard_window_token = None
-            self._show_main_window()
+            if (
+                not self._show_main_after_shutdown
+                and self.main_window is not None
+                and not getattr(self.main_window, "_pending_app_exit", False)
+            ):
+                self._show_main_after_shutdown = True
+            if self._show_main_after_shutdown and self.main_window is not None:
+                request_return = getattr(self.main_window, "request_return_from_videowall", None)
+                if callable(request_return):
+                    request_return()
             self._stop_thread = threading.Thread(target=shutdown_pipeline, daemon=True)
             self._stop_thread.start()
         self.wall.closing.connect(stop_threads)
 
     def _save_roi(self, cam_id, roi):
         self.dbworker.save_roi(self.config_id, cam_id, roi)
+
+    def _format_camera_title(self, camera):
+        name = (camera.get("name") or "").strip()
+        location = (camera.get("location") or "").strip()
+
+        if name and location:
+            return f"{name} - {location}"
+        if name:
+            return name
+        if location:
+            return location
+        return f"Камера {camera['id']}"
 
     def _open_dashboard(self):
         if self.dashboard_window is not None:
@@ -292,7 +330,7 @@ class VideoWallExec:
         if self.wall is None or self._stopping:
             return
 
-        self._show_main_window()
+        self._show_main_after_shutdown = True
         self.wall.hide()
         QTimer.singleShot(0, self.wall.close)
 
@@ -301,6 +339,7 @@ class VideoWallExec:
             return
 
         if self.wall is not None and not self._stopping:
+            self._show_main_after_shutdown = False
             self.wall.hide()
             QTimer.singleShot(0, self.wall.close)
 
@@ -312,9 +351,14 @@ class VideoWallExec:
             return
 
         try:
-            self.main_window.show()
-            self.main_window.raise_()
-            self.main_window.activateWindow()
+            prepare_return = getattr(self.main_window, "prepare_return_from_videowall", None)
+            if callable(prepare_return):
+                prepare_return()
+            else:
+                self.main_window.showNormal()
+                self.main_window.show()
+                self.main_window.raise_()
+                self.main_window.activateWindow()
         except RuntimeError:
             self.main_window = None
         

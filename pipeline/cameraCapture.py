@@ -18,10 +18,45 @@ class CameraCapture(threading.Thread):
         self.metrics_state = metrics_state
         self.cap = None
         print(f"CAMERACAPTURE [{cam_id}] INIT")
-        
-        
+
+    def _open_capture(self):
+        cap = cv2.VideoCapture()
+
+        # Ask FFmpeg/OpenCV to fail reads quickly during shutdown instead of
+        # blocking for a long time inside read().
+        params = []
+        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+            params.extend([cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2000])
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            params.extend([cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000])
+        if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+            params.extend([cv2.CAP_PROP_BUFFERSIZE, 1])
+
+        try:
+            if hasattr(cap, "setExceptionMode"):
+                cap.setExceptionMode(True)
+        except Exception:
+            pass
+
+        opened = False
+        if params:
+            try:
+                opened = cap.open(self.camera_path, cv2.CAP_FFMPEG, params)
+            except TypeError:
+                opened = False
+            except cv2.error:
+                opened = False
+
+        if not opened:
+            try:
+                opened = cap.open(self.camera_path, cv2.CAP_FFMPEG)
+            except cv2.error:
+                opened = False
+
+        return cap
+
     def run(self):
-        self.cap = cv2.VideoCapture(self.camera_path, cv2.CAP_FFMPEG)
+        self.cap = self._open_capture()
         cap = self.cap
         
         frame_interval = 1.0 / self.fps
@@ -170,10 +205,4 @@ class CameraCapture(threading.Thread):
 
     def stop(self):
         self.stop_evt.set()
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
             

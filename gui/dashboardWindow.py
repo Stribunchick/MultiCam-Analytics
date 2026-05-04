@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDateTimeEdit,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -92,7 +93,7 @@ class BarChartWidget(QWidget):
             painter.setBrush(colors[idx % len(colors)])
             painter.drawRoundedRect(bar_left, y + 2, width, 16, 4, 4)
             painter.setPen(QPen(QColor(203, 213, 225)))
-            painter.drawText(bar_left + width + 8, y, 36, 20, Qt.AlignmentFlag.AlignLeft, str(value))
+            painter.drawText(bar_left + width + 8, y, 48, 20, Qt.AlignmentFlag.AlignLeft, str(value))
 
         painter.end()
 
@@ -139,13 +140,14 @@ class DashboardWindow(QWidget):
         super().__init__()
         self.dbworker = dbworker
         self.snapshot_windows = []
+        self.class_danger_levels = {}
+
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setWindowTitle("Аналитический дашборд")
-        self.resize(980, 680)
-        self.setMinimumSize(900, 620)
+        self.setWindowTitle("История событий")
+        self.resize(1120, 760)
+        self.setMinimumSize(980, 680)
 
         self._setup_ui()
-        self.class_danger_levels = {}
         self._load_filter_values()
         self.refresh()
 
@@ -154,12 +156,9 @@ class DashboardWindow(QWidget):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
-        title = QLabel("Аналитический дашборд")
+        title = QLabel("История событий")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Сводка событий, активность камер и история обнаружений")
-        subtitle.setObjectName("pageSubtitle")
         root.addWidget(title)
-        root.addWidget(subtitle)
 
         filters_box = QGroupBox("Фильтры")
         filters = QHBoxLayout(filters_box)
@@ -177,27 +176,40 @@ class DashboardWindow(QWidget):
 
         self.camera_filter = QComboBox()
         self.event_filter = QComboBox()
+        self.source_filter = QComboBox()
 
         refresh_button = QPushButton("Обновить")
         refresh_button.clicked.connect(self.refresh)
 
-        filters.addWidget(QLabel("С"))
+        start_label = QLabel("С")
+        start_label.setStyleSheet("background: transparent;")
+        filters.addWidget(start_label)
         filters.addWidget(self.start_filter)
-        filters.addWidget(QLabel("По"))
+        end_label = QLabel("По")
+        end_label.setStyleSheet("background: transparent;")
+        filters.addWidget(end_label)
         filters.addWidget(self.end_filter)
-        filters.addWidget(QLabel("Камера"))
+        camera_label = QLabel("Камера")
+        camera_label.setStyleSheet("background: transparent;")
+        filters.addWidget(camera_label)
         filters.addWidget(self.camera_filter)
-        filters.addWidget(QLabel("Событие"))
+        event_label = QLabel("Событие")
+        event_label.setStyleSheet("background: transparent;")
+        filters.addWidget(event_label)
         filters.addWidget(self.event_filter)
+        source_label = QLabel("Источник")
+        source_label.setStyleSheet("background: transparent;")
+        filters.addWidget(source_label)
+        filters.addWidget(self.source_filter)
         filters.addWidget(refresh_button)
 
         root.addWidget(filters_box)
 
         stats_grid = QGridLayout()
         stats_grid.setSpacing(12)
-        self.total_label = self._metric_label("0", "Всего событий")
-        self.active_label = self._metric_label("0", "Активные")
-        self.finished_label = self._metric_label("0", "Завершенные")
+        self.total_label = self._metric_label("0", "Всего записей")
+        self.active_label = self._metric_label("0", "Открытые тревоги")
+        self.finished_label = self._metric_label("0", "Закрытые тревоги")
         self.avg_duration_label = self._metric_label("0 сек", "Средняя длительность")
 
         stats_grid.addWidget(self.total_label, 0, 0)
@@ -217,16 +229,18 @@ class DashboardWindow(QWidget):
         self.events_table = QTableWidget()
         self.events_table.setColumnCount(8)
         self.events_table.setHorizontalHeaderLabels([
-            "ID",
+            "Уровень",
+            "Тревога",
             "Камера",
             "Локация",
             "Начало",
             "Окончание",
-            "Тип",
-            "Источник",
             "Длительность",
+            "Кадр",
         ])
         self.events_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.events_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.events_table.setAlternatingRowColors(True)
         self.events_table.horizontalHeader().setStretchLastSection(True)
         self.events_table.cellClicked.connect(self._open_snapshot_from_row)
         root.addWidget(self.events_table)
@@ -235,9 +249,7 @@ class DashboardWindow(QWidget):
         label = QLabel(f"<b>{value}</b><br>{caption}")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setMinimumHeight(72)
-        label.setProperty("metric", True)
-        label.style().unpolish(label)
-        label.style().polish(label)
+        label.setStyleSheet("padding: 12px;")
         return label
 
     def _load_filter_values(self):
@@ -247,34 +259,42 @@ class DashboardWindow(QWidget):
             self.camera_filter.addItem(name, cam_id)
 
         self.event_filter.clear()
-        self.event_filter.addItem("Все события", None)
+        self.event_filter.addItem("Все типы событий", None)
         for event_type in self.dbworker.fetch_event_types_for_dashboard():
             self.event_filter.addItem(event_type, event_type)
+
+        self.source_filter.clear()
+        self.source_filter.addItem("Только тревоги", "alert")
+        self.source_filter.addItem("Все записи", None)
+        self.source_filter.addItem("Только события", "event")
 
     def refresh(self):
         start_dt = self.start_filter.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         end_dt = self.end_filter.dateTime().toString("yyyy-MM-dd HH:mm:ss")
         camera_id = self.camera_filter.currentData()
         event_type = self.event_filter.currentData()
+        source_type = self.source_filter.currentData()
 
+        self.class_danger_levels = self.dbworker.fetch_class_danger_levels()
         snapshot = self.dbworker.fetch_dashboard_snapshot(
             start_dt=start_dt,
             end_dt=end_dt,
             camera_id=camera_id,
             event_type=event_type,
+            source_type=source_type,
         )
-        self.class_danger_levels = self.dbworker.fetch_class_danger_levels()
         events = self.dbworker.fetch_dashboard_events(
             start_dt=start_dt,
             end_dt=end_dt,
             camera_id=camera_id,
             event_type=event_type,
+            source_type=source_type,
             limit=500,
         )
 
-        self.total_label.setText(f"<b>{snapshot['total']}</b><br>Всего событий")
-        self.active_label.setText(f"<b>{snapshot['active']}</b><br>Активные")
-        self.finished_label.setText(f"<b>{snapshot['finished']}</b><br>Завершенные")
+        self.total_label.setText(f"<b>{snapshot['total']}</b><br>Всего записей")
+        self.active_label.setText(f"<b>{snapshot['active']}</b><br>Открытые тревоги")
+        self.finished_label.setText(f"<b>{snapshot['finished']}</b><br>Закрытые тревоги")
         self.avg_duration_label.setText(
             f"<b>{self._format_duration(snapshot['avg_duration'])}</b><br>Средняя длительность"
         )
@@ -288,24 +308,26 @@ class DashboardWindow(QWidget):
 
         for row, event in enumerate(events):
             log_id, _, camera_name, location, start, stop, event_type, src, snapshot_path = event
+            danger_level = self.class_danger_levels.get(event_type, "safe")
             values = [
-                log_id,
+                danger_level.title(),
+                event_type,
                 camera_name,
                 location,
                 start,
                 stop or "",
-                event_type,
-                src,
                 self._duration_from_strings(start, stop),
+                "Открыть" if snapshot_path else "-",
             ]
 
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value or ""))
                 item.setData(Qt.ItemDataRole.UserRole, snapshot_path)
+                item.setData(Qt.ItemDataRole.UserRole + 1, log_id)
                 if snapshot_path:
-                    item.setToolTip("Нажмите, чтобы открыть сохраненный кадр события")
-                if col == 5 and value:
-                    self._apply_event_level_style(item, str(value))
+                    item.setToolTip("Нажмите, чтобы открыть сохраненный кадр")
+                if col == 0:
+                    self._apply_event_level_style(item, event_type)
                 self.events_table.setItem(row, col, item)
 
         self.events_table.resizeColumnsToContents()
@@ -319,6 +341,57 @@ class DashboardWindow(QWidget):
         foreground = QColor("black") if background.lightness() > 150 else QColor("white")
         item.setBackground(background)
         item.setForeground(foreground)
+
+    def _populate_recent_alerts(self, events):
+        self._clear_layout(self.recent_alerts_layout)
+        alerts = [event for event in events if event[7] == "alert"][:4]
+
+        if not alerts:
+            placeholder = QLabel("В выбранном диапазоне нет подтвержденных тревог.")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.recent_alerts_layout.addWidget(placeholder)
+            return
+
+        for event in alerts:
+            _, _, camera_name, location, start, stop, event_type, _, snapshot_path = event
+            danger_level = self.class_danger_levels.get(event_type, "safe")
+            background_hex = level_color(danger_level)
+            text_color = "black" if QColor(background_hex).lightness() > 150 else "white"
+
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setMinimumHeight(118)
+            card.setStyleSheet(
+                f"background:{background_hex}; border-radius:10px; padding:8px;"
+            )
+
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(6)
+
+            title = QLabel(event_type)
+            title.setStyleSheet(f"font-weight:700; color:{text_color};")
+            subtitle = QLabel(camera_name or "Неизвестная камера")
+            subtitle.setStyleSheet(f"color:{text_color};")
+            meta = QLabel(location or start or "")
+            meta.setStyleSheet(f"color:{text_color};")
+            status = QLabel("Открыта" if not stop else f"Закрыта • {self._duration_from_strings(start, stop)}")
+            status.setStyleSheet(f"color:{text_color};")
+            if snapshot_path:
+                status.setToolTip(snapshot_path)
+
+            layout.addWidget(title)
+            layout.addWidget(subtitle)
+            layout.addWidget(meta)
+            layout.addWidget(status)
+            self.recent_alerts_layout.addWidget(card, 1)
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def _open_snapshot_from_row(self, row, column):
         item = self.events_table.item(row, 0)
@@ -348,7 +421,7 @@ class DashboardWindow(QWidget):
 
     def _duration_from_strings(self, start, stop):
         if not stop:
-            return "активно"
+            return "открыта"
 
         start_dt = self._parse_log_datetime(start)
         stop_dt = self._parse_log_datetime(stop)

@@ -1,5 +1,6 @@
-from PySide6.QtCore import QTimer, Slot
+from PySide6.QtCore import QTimer, Qt, Slot
 from PySide6.QtWidgets import (
+    QApplication,
     QHeaderView,
     QLabel,
     QMainWindow,
@@ -23,15 +24,25 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setMinimumSize(760, 520)
         self.db_path = "./db/logs.db"
         self.dbworker = DBWorker(self.db_path)
         self.vw = None
         self._allow_close = False
         self._pending_app_exit = False
+        self._pending_return_to_main = False
+        self._returning_from_videowall = False
         self._shutdown_poll_timer = QTimer(self)
         self._shutdown_poll_timer.setInterval(150)
         self._shutdown_poll_timer.timeout.connect(self._poll_videowall_shutdown)
+        self._return_guard_timer = QTimer(self)
+        self._return_guard_timer.setSingleShot(True)
+        self._return_guard_timer.setInterval(1200)
+        self._return_guard_timer.timeout.connect(self._finish_return_from_videowall)
 
         self._setup_header()
         self._setup_dashboard_button()
@@ -40,11 +51,8 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         self.connect_signals()
 
     def _setup_header(self):
-        self.title_label = QLabel("MultiCam Analytics")
+        self.title_label = QLabel("Multicam Analytics")
         self.title_label.setObjectName("pageTitle")
-        self.subtitle_label = QLabel("Конфигурации камер, моделей и запуск видеостены")
-        self.subtitle_label.setObjectName("pageSubtitle")
-        self.verticalLayout.insertWidget(0, self.subtitle_label)
         self.verticalLayout.insertWidget(0, self.title_label)
 
     def connect_signals(self):
@@ -145,6 +153,7 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
     def _run_video_wall(self, config_id):
         try:
             self._pending_app_exit = False
+            self._pending_return_to_main = False
             config = self.dbworker.fetch_config_by_id(config_id)[0]
             cameras = self.dbworker.fetch_cameras_by_id(config_id)
             classes = self.dbworker.fetch_classes_by_id(config_id)
@@ -181,13 +190,61 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
         if self.vw is None or self.vw.is_shutdown_complete():
             self._shutdown_poll_timer.stop()
             self.vw = None
+            if self._pending_return_to_main:
+                self._pending_return_to_main = False
+                self._finish_return_from_videowall()
+                return
             if self._pending_app_exit:
                 self._allow_close = True
                 self.close()
 
+    def request_return_from_videowall(self):
+        self._pending_app_exit = False
+        self._pending_return_to_main = True
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+        if not self._shutdown_poll_timer.isActive():
+            self._shutdown_poll_timer.start()
+        self.prepare_return_from_videowall()
+
+    def prepare_return_from_videowall(self):
+        self._pending_app_exit = False
+        self._allow_close = False
+        self._returning_from_videowall = True
+        if self._shutdown_poll_timer.isActive():
+            self._shutdown_poll_timer.stop()
+        self._return_guard_timer.start()
+        self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _finish_return_from_videowall(self):
+        if self._return_guard_timer.isActive():
+            self._return_guard_timer.stop()
+        self._returning_from_videowall = False
+
     def closeEvent(self, event):
         if self._allow_close:
             event.accept()
+            QTimer.singleShot(0, QApplication.instance().quit)
+            return
+
+        if self._pending_return_to_main:
+            event.ignore()
+            return
+
+        if self._returning_from_videowall:
+            event.ignore()
+            self.showNormal()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            return
+
+        if not event.spontaneous():
+            event.ignore()
             return
 
         if self.vw is not None and not self.vw.is_shutdown_complete():
@@ -200,3 +257,4 @@ class ConfigMainWindow(QMainWindow, Ui_main_config_window):
             return
 
         event.accept()
+        QTimer.singleShot(0, QApplication.instance().quit)

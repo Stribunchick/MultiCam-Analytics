@@ -107,7 +107,7 @@ class ModelManagerWindow(QWidget, Ui_models_manager_window):
         for row, (class_id, name, model_id, danger_level, alert_enabled, alert_delay_sec, model_path) in enumerate(classes):
             table.setItem(row, 0, QTableWidgetItem(str(class_id)))
             table.setItem(row, 1, QTableWidgetItem(name))
-            table.setItem(row, 2, QTableWidgetItem(model_path or f"Model {model_id}"))
+            table.setItem(row, 2, QTableWidgetItem(model_path or f"Модель {model_id}"))
 
             level_item = QTableWidgetItem(level_label(danger_level))
             color = QColor(level_color(danger_level))
@@ -123,7 +123,7 @@ class ModelManagerWindow(QWidget, Ui_models_manager_window):
             self,
             "Выбрать модель",
             "",
-            "Model files (*.pt *.onnx *.engine)",
+            "Файлы моделей (*.pt *.onnx *.engine)",
         )
 
         if not file_path:

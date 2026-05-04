@@ -25,6 +25,8 @@ class PostProcessWorker(multiprocessing.Process):
         roi_state=None,
         metrics_state=None,
         snapshot_dir=None,
+        alert_queue=None,
+        alert_decisions=None,
     ):
         super().__init__()
         self.stop_evt = multiprocessing.Event()
@@ -37,8 +39,11 @@ class PostProcessWorker(multiprocessing.Process):
         self.roi_state = roi_state
         self.metrics_state = metrics_state
         self.snapshot_dir = snapshot_dir
+        self.alert_queue = alert_queue
+        self.alert_decisions = alert_decisions
 
         self.active_tracks = {cam_id: {} for cam_id in cam_ids}
+        self.pending_alerts = {}
         self.class_danger_levels = {}
         self.class_alert_settings = {}
         self.unknown_class_ids = set()
@@ -100,6 +105,7 @@ class PostProcessWorker(multiprocessing.Process):
             try:
                 packet = self.to_process_queue.get(timeout=0.1)
             except queue.Empty:
+                self._process_alert_decisions()
                 if self.stop_evt.is_set():
                     break
                 continue
@@ -172,40 +178,54 @@ class PostProcessWorker(multiprocessing.Process):
 
                     track_state = cam_active.get(track_id)
                     if track_state is not None and track_state["class_name"] != cls_name:
-                        self._finish_event(track_state, timestamp)
+                        self._finalize_track_state(track_state, timestamp)
                         del cam_active[track_id]
                         track_state = None
 
                     if track_state is None:
                         log_id = f"{cam_id}:{track_id}:{timestamp}"
                         track_state = {
+                            "cam_id": cam_id,
+                            "track_id": track_id,
                             "class_name": cls_name,
+                            "start_timestamp": timestamp,
                             "first_seen_monotonic": time.monotonic(),
-                            "alert_started": False,
+                            "alert_pending": False,
+                            "alert_rejected": False,
+                            "db_started": False,
                             "log_id": log_id,
                             "snapshot_path": None,
+                            "ended_timestamp": None,
                         }
                         cam_active[track_id] = track_state
-                        self._start_event(log_id, timestamp, cam_id, cls_name)
 
                     if not self._alert_enabled(cls_name):
+                        if not track_state["db_started"]:
+                            self._start_event(
+                                track_state["log_id"],
+                                track_state["start_timestamp"],
+                                cam_id,
+                                cls_name,
+                                src="event",
+                            )
+                            track_state["db_started"] = True
                         continue
 
-                    if track_state["alert_started"]:
+                    if track_state["db_started"] or track_state["alert_pending"] or track_state["alert_rejected"]:
                         continue
 
                     if (time.monotonic() - track_state["first_seen_monotonic"]) < self._alert_delay_sec(cls_name):
                         continue
 
                     snapshot_path = self._save_alert_snapshot(frame.image, track, cam_id, cls_name, timestamp)
-                    track_state["alert_started"] = True
+                    track_state["alert_pending"] = True
                     track_state["snapshot_path"] = snapshot_path
-                    if snapshot_path:
-                        self._attach_snapshot(track_state["log_id"], snapshot_path)
+                    self.pending_alerts[track_state["log_id"]] = track_state
+                    self._emit_pending_alert(track_state)
 
                 lost_ids = set(cam_active.keys()) - current_active
                 for track_id in lost_ids:
-                    self._finish_event(cam_active[track_id], timestamp)
+                    self._finalize_track_state(cam_active[track_id], timestamp)
                     del cam_active[track_id]
 
                 packet_visible_tracks += len(visible_tracks)
@@ -248,6 +268,8 @@ class PostProcessWorker(multiprocessing.Process):
                 frames_since_report = 0
                 last_report_at = time.monotonic()
 
+            self._process_alert_decisions()
+
         self._close_all_active_tracks(self._shutdown_timestamp())
 
     def _is_allowed_class(self, cls_name):
@@ -267,7 +289,7 @@ class PostProcessWorker(multiprocessing.Process):
             return 0.0
         return max(0.0, float(settings.get("alert_delay_sec", 0.0)))
 
-    def _start_event(self, log_id, timestamp, cam_id, cls_name):
+    def _start_event(self, log_id, timestamp, cam_id, cls_name, src="event", snapshot_path=None):
         self.log_task_queue.put_nowait(
             {
                 "action": "start",
@@ -275,16 +297,7 @@ class PostProcessWorker(multiprocessing.Process):
                 "datetimeStart": timestamp,
                 "cam_id": cam_id,
                 "event_type": cls_name,
-                "src": "test",
-                "snapshot_path": None,
-            }
-        )
-
-    def _attach_snapshot(self, log_id, snapshot_path):
-        self.log_task_queue.put_nowait(
-            {
-                "action": "snapshot",
-                "log_id": log_id,
+                "src": src,
                 "snapshot_path": snapshot_path,
             }
         )
@@ -302,11 +315,109 @@ class PostProcessWorker(multiprocessing.Process):
             }
         )
 
+    def _emit_pending_alert(self, track_state):
+        if self.alert_queue is None:
+            return
+
+        try:
+            self.alert_queue.put_nowait(
+                {
+                    "id": track_state["log_id"],
+                    "cam_id": track_state["cam_id"],
+                    "track_id": track_state["track_id"],
+                    "event_type": track_state["class_name"],
+                    "datetimeStart": track_state["start_timestamp"],
+                    "snapshot_path": track_state.get("snapshot_path"),
+                    "danger_level": self.class_danger_levels.get(track_state["class_name"], "safe"),
+                }
+            )
+        except queue.Full:
+            print("[POSTPROCESS] Pending alert queue is full")
+
+    def _process_alert_decisions(self):
+        if self.alert_decisions is None:
+            return
+
+        for alert_id in list(self.alert_decisions.keys()):
+            decision = self.alert_decisions.get(alert_id)
+            try:
+                del self.alert_decisions[alert_id]
+            except KeyError:
+                pass
+
+            track_state = self.pending_alerts.get(alert_id)
+            if track_state is None:
+                continue
+
+            if decision == "confirm":
+                self._confirm_pending_alert(track_state)
+            else:
+                self._reject_pending_alert(track_state)
+
+    def _confirm_pending_alert(self, track_state):
+        if not track_state["db_started"]:
+            self._start_event(
+                track_state["log_id"],
+                track_state["start_timestamp"],
+                track_state["cam_id"],
+                track_state["class_name"],
+                src="alert",
+                snapshot_path=track_state.get("snapshot_path"),
+            )
+            track_state["db_started"] = True
+
+        track_state["alert_pending"] = False
+        self.pending_alerts.pop(track_state["log_id"], None)
+
+        if track_state.get("ended_timestamp"):
+            self._finish_event(track_state, track_state["ended_timestamp"])
+
+    def _reject_pending_alert(self, track_state):
+        track_state["alert_pending"] = False
+        track_state["alert_rejected"] = True
+        self.pending_alerts.pop(track_state["log_id"], None)
+        self._delete_snapshot(track_state)
+
+    def _finalize_track_state(self, track_state, timestamp):
+        if track_state.get("db_started"):
+            self._finish_event(track_state, timestamp)
+            self.pending_alerts.pop(track_state["log_id"], None)
+            return
+
+        if track_state.get("alert_pending"):
+            track_state["ended_timestamp"] = timestamp
+            return
+
+        self._delete_snapshot(track_state)
+
+    def _delete_snapshot(self, track_state):
+        snapshot_path = track_state.get("snapshot_path")
+        if not snapshot_path:
+            return
+
+        try:
+            if os.path.exists(snapshot_path):
+                os.remove(snapshot_path)
+        except OSError as exc:
+            print(f"[POSTPROCESS] Failed to delete snapshot: {exc}")
+
+        track_state["snapshot_path"] = None
+
     def _close_all_active_tracks(self, timestamp):
+        self._process_alert_decisions()
+
         for cam_tracks in self.active_tracks.values():
             for track_state in list(cam_tracks.values()):
-                self._finish_event(track_state, timestamp)
+                self._finalize_track_state(track_state, timestamp)
             cam_tracks.clear()
+
+        for track_state in list(self.pending_alerts.values()):
+            if track_state.get("db_started") and track_state.get("ended_timestamp"):
+                self._finish_event(track_state, track_state["ended_timestamp"])
+            elif not track_state.get("db_started"):
+                self._delete_snapshot(track_state)
+
+        self.pending_alerts.clear()
 
     @staticmethod
     def _shutdown_timestamp():
@@ -366,7 +477,7 @@ class PostProcessWorker(multiprocessing.Process):
             color = self._track_color(cls_name)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-            label = f"{cls_name} ID:{track_id}"
+            label = f"{cls_name}"
             cv2.putText(
                 frame,
                 label,
